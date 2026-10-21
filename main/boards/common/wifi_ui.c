@@ -1966,8 +1966,9 @@ bool board_ui_step(bool host_active) {
     static int64_t row_at, draw_at;
     if (now - row_at >= ROW_US) {
         row_at = now;
-        if (blist) {}
-        else if (sniffer && sn_page != SN_PAGE_DET) sn_push_row(now);
+        /* DETEKTOR writes its own rows (one per run) into wf. */
+        if (blist || (sniffer && sn_page == SN_PAGE_DET)) {}
+        else if (sniffer) sn_push_row(now);
         else wf_push_row();
     }
     if (!sniffer) {
