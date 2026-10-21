@@ -1,0 +1,3 @@
+# Select an ESP32 target explicitly (for example, idf.py set-target esp32s3).
+# ESP-IDF loads sdkconfig.defaults.<target> after this file. Keep chip-specific
+# memory, transport and clock settings in those target files.

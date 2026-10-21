@@ -1,0 +1,132 @@
+menu "ESP-SDR transport"
+
+    config ESP_SDR_UART_ENABLED
+        bool "Burst UART0 I/Q transport" if !IDF_TARGET_ESP32 && !IDF_TARGET_ESP32C2
+        depends on IDF_TARGET_ESP32H2 || IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32S31
+        default y
+        help
+            Enable the optional USB-to-UART bridge interface. Disable it to
+            leave the UART GPIOs unused by the application. Native USB remains
+            available on chips that support it. The original ESP32 and ESP32-C2 require UART.
+
+    config ESP_SDR_UART_BAUD
+        int "Burst UART0 I/Q baud rate"
+        depends on IDF_TARGET_ESP32H2 || IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32S31
+        range 115200 2500000 if IDF_TARGET_ESP32C2
+        range 115200 3000000 if !IDF_TARGET_ESP32C2
+        default 2000000
+        help
+            The burst I/Q protocol is also available on UART0, 8N1, without
+            hardware flow control. The browser baud rate must match this value.
+            BAUD 1000000 and BAUD 2000000 can change the running UART rate.
+            Resetting the board restores this configured default.
+
+    config ESP_SDR_UART_TX_PIN
+        int "Burst UART0 TX GPIO"
+        depends on IDF_TARGET_ESP32H2 || IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32S31
+        range 0 20 if IDF_TARGET_ESP32C2
+        range 0 27 if IDF_TARGET_ESP32H2
+        range 0 48 if !IDF_TARGET_ESP32S31 && !IDF_TARGET_ESP32C2 && !IDF_TARGET_ESP32H2
+        range 0 63 if IDF_TARGET_ESP32S31
+        default 1 if IDF_TARGET_ESP32
+        default 24 if IDF_TARGET_ESP32H2
+        default 20 if IDF_TARGET_ESP32C2
+        default 21 if IDF_TARGET_ESP32C3
+        default 58 if IDF_TARGET_ESP32S31
+        default 16 if IDF_TARGET_ESP32C6
+        default 11 if IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32C5
+        default 43
+
+    config ESP_SDR_UART_RX_PIN
+        int "Burst UART0 RX GPIO"
+        depends on IDF_TARGET_ESP32H2 || IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32 || IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32C61 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32S31
+        range 0 20 if IDF_TARGET_ESP32C2
+        range 0 27 if IDF_TARGET_ESP32H2
+        range 0 48 if !IDF_TARGET_ESP32S31 && !IDF_TARGET_ESP32C2 && !IDF_TARGET_ESP32H2
+        range 0 63 if IDF_TARGET_ESP32S31
+        default 3 if IDF_TARGET_ESP32
+        default 23 if IDF_TARGET_ESP32H2
+        default 19 if IDF_TARGET_ESP32C2
+        default 20 if IDF_TARGET_ESP32C3
+        default 59 if IDF_TARGET_ESP32S31
+        default 17 if IDF_TARGET_ESP32C6
+        default 10 if IDF_TARGET_ESP32C61
+        default 12 if IDF_TARGET_ESP32C5
+        default 44
+
+endmenu
+
+menu "ESP-SDR board"
+
+    choice ESP_SDR_BOARD
+        prompt "On-device UI board"
+        default ESP_SDR_BOARD_NONE
+        help
+            Adds a standalone receiver UI on a board's own display. The UI
+            runs between serial commands and pauses while a host holds the
+            serial lease, so host tools keep working.
+
+        config ESP_SDR_BOARD_NONE
+            bool "None (host tools only)"
+
+        config ESP_SDR_ODROID_GO
+            bool "ODROID-GO display, buttons and speaker UI"
+            depends on IDF_TARGET_ESP32
+            help
+                Spectrum/waterfall, Zigbee channel survey and a signal hunter
+                with a pitch-by-level tone on the ODROID-GO ILI9341 display,
+                D-pad and buttons and DAC speaker. Reserves the board's
+                display, SD, button, LED and speaker pins.
+
+        config ESP_SDR_TDISPLAY
+            bool "LILYGO TTGO T-Display (ST7789 1.14\") Wi-Fi survey UI"
+            depends on IDF_TARGET_ESP32
+            help
+                Wi-Fi survey on the 240x135 ST7789: spectrum waterfall over
+                channels 1-13, network list from periodic scans and channel
+                airtime bars. Pages cycle by themselves; the two buttons
+                (GPIO0, GPIO35) and two touch pins (GPIO32, GPIO33) step pages
+                and start a scan.
+
+        config ESP_SDR_JC3248
+            bool "Guition JC3248W535 (ESP32-S3, 3.5\" 480x320) Wi-Fi survey UI"
+            depends on IDF_TARGET_ESP32S3
+            help
+                The T-Display's survey and sniffer on the 320x480 AXS15231B
+                QSPI panel (landscape, 2x scaled), controlled by touch: left
+                half = left button, right half = right button; BOOT = left.
+                Needs the board's octal PSRAM for the frame.
+    endchoice
+
+    config ESP_SDR_LOCAL_UI
+        bool
+        default y if ESP_SDR_ODROID_GO || ESP_SDR_TDISPLAY || ESP_SDR_JC3248
+
+    config ESP_SDR_SCAN_INTERVAL_S
+        int "Survey UI: seconds for a network scan of channels 1-13 (0: manual only)"
+        depends on ESP_SDR_TDISPLAY || ESP_SDR_JC3248
+        range 0 3600
+        default 9
+        help
+            The sweep is split into three short scans of a few channels each,
+            so the display stalls for only about 0.2 s at a time.
+
+    config ESP_SDR_TDISPLAY_SPI_MHZ
+        int "T-Display: SPI clock of the display in MHz (40 or 80)"
+        depends on ESP_SDR_TDISPLAY
+        range 40 80
+        default 80
+        help
+            80 MHz halves the time a frame takes on the bus. The ST7789 is
+            specified for less, but many panels run fine; 40 MHz is safe.
+
+    config ESP_SDR_PAGE_SECONDS
+        int "Survey UI: seconds per page when cycling automatically (0: buttons only)"
+        depends on ESP_SDR_TDISPLAY || ESP_SDR_JC3248
+        range 0 600
+        default 0
+        help
+            A long press on the left button turns cycling on or off at run
+            time; with 0 it then uses 12 s.
+
+endmenu

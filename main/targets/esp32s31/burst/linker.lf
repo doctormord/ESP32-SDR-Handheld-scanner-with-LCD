@@ -1,0 +1,9 @@
+# Bank switches have a sub-millisecond deadline. Keep the scheduler and SIMD
+# worker independent of flash cache misses while the RF writer owns SRAM.
+[mapping:esp_sdr_s31_spectrum]
+archive: libmain.a
+entries:
+    receiver (noflash)
+    s31_fft_rnd (noflash)
+    s31_unpack (noflash)
+    burst_serial:burst_serial_port (noflash)
