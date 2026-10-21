@@ -1,0 +1,35 @@
+# ESP-IDF build outputs and downloaded dependencies
+/build/
+/build-*/
+/build_*/
+/cmake-build-*/
+/managed_components/
+/artifacts/
+
+# Generated local configurations; retain source defaults
+/sdkconfig
+/sdkconfig.*
+!/sdkconfig.defaults
+!/sdkconfig.defaults.*
+/sdkconfig.defaults*.old
+
+# Python development files
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+*.log
+
+# CI SDK checkout
+/.esp-idf/

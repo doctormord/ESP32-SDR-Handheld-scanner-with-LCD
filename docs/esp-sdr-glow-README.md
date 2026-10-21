@@ -1,0 +1,479 @@
+# esp-sdr-glow
+
+**ESP-SDR fork for the ODROID-GO, with GLOW!**
+
+A handheld 2.4 GHz spectrum analyzer and signal hunter on the
+[ODROID-GO](https://wiki.odroid.com/odroid_go/odroid_go), built on
+[ESP-SDR](https://github.com/ESPARGOS/esp-sdr). It reads raw I/Q samples from the
+ESP32's own Wi-Fi receiver and shows them on the ODROID-GO's screen, with its
+buttons, speaker and battery. You don't need a computer, a USB dongle or any
+extra radio hardware.
+
+Its signature view is **GLOW**, a digital-phosphor (persistence) display.
+Every snapshot adds a little intensity under its trace, and the picture fades
+back to black. Levels that are always present glow hot, and rare bursts stay
+faint and cold. You see the noise floor, the busy channels and the occasional
+outliers in one picture. The channel pages use the same idea: each Wi-Fi or
+Zigbee channel gets its own glowing column.
+
+<p align="center"><img src="odroid-go-glow.jpg" width="70%" alt="GLOW view on the ODROID-GO at 2440 MHz, 80 MS/s: two Wi-Fi access points (channels 6 and 11) glow above the noise floor, with Zigbee channel numbers along the axis"></p>
+
+The original ESP-SDR README follows below the line.
+
+## What it does
+
+| Page | What you see |
+| --- | --- |
+| **SPEC** | Spectrum around a centre frequency (80, 40 or 16 MHz span) in three views. **GLOW** (default) uses the whole screen, **PEAK** adds a falling peak hold and a waterfall, **LIVE** is a plain trace with a waterfall. Zigbee or Wi-Fi channel marks are overlaid. |
+| **WIFI** | Channels 1–13, measured in the central 16 MHz of each. Per channel: level above the noise floor (GLOW column or bar), decaying hold, session max and **airtime**. Airtime is the share of time the channel is busy, taken from 13 µs windows inside each snapshot with no decoding. The quietest of 1/6/11 is marked **BEST**. |
+| **ZIGBEE** | 802.15.4 channels 11–26 (2 MHz each), with the same levels plus **activity**, the share of snapshots that caught a burst. |
+| **HUNT** | One Zigbee channel, one Wi-Fi channel or any frequency. Shows a big dB-over-floor number, a level bar and 32 s of history. The speaker works as a **Geiger counter** (one click per caught burst, louder for stronger bursts) or plays a **pitch** that rises with the level (+12 dB = one octave). Walk around and follow the sound. |
+
+Plugged into a computer, the firmware still speaks the ESP-SDR serial protocol
+(UART at 2 Mbaud through the ODROID-GO's CP2102N). The
+[browser viewer](https://espargos.net/espsdr/app/) works as usual, and the
+screen shows *USB HOST IN CONTROL* until the host has been quiet for 5 s.
+
+## Controls
+
+| Key | Everywhere |
+| --- | --- |
+| MENU | Page: SPEC → WIFI/ZIGBEE → HUNT |
+| ↑ ↓ | Gain (hold > 1 s for steps of 4) |
+| SELECT | SPEC: hardware AGC on/off. Other pages: auto-ranging on/off |
+
+| Key | SPEC |
+| --- | --- |
+| ← → | Tune by 1 MHz (hold: 1/8 of the span) |
+| A | Span 80 / 40 / 16 MS/s (refits the scale) |
+| B (release) | View: LIVE → PEAK → GLOW |
+| B held + ← → / ↑ ↓ | GLOW fill per snapshot / fade time |
+| START (release) | Pause |
+| START held + ↑ ↓ / ← → / A | Scale top ±5 dB / range ±10 dB / fit to the signal now |
+| START held + B | LO hops: off → ±1 → ±5 → ±10 MHz |
+| START held + VOLUME | Waterfall average over the last 1 / 2 / 3 / 4 frames (one row per frame) |
+| VOLUME | Channel marks: Zigbee → Wi-Fi → off |
+
+| Key | WIFI / ZIGBEE |
+| --- | --- |
+| ← → | Select a channel |
+| A | Hunt the selected channel |
+| B (release) | Bars ↔ GLOW (B held + D-pad: fill / fade) |
+| START | Reset the statistics |
+| VOLUME | Switch WIFI ↔ ZIGBEE |
+
+| Key | HUNT |
+| --- | --- |
+| ← → | Channel, or frequency in 1 MHz steps |
+| A | Target: Zigbee channel → Wi-Fi channel → MHz |
+| B | Sound: tick (Geiger, default) → off → pitch |
+| START | Reset max and history |
+| VOLUME | Sound on / mute |
+
+## Install
+
+**This replaces whatever is in the ODROID-GO's flash** (stock launcher,
+Retro-Go, MicroPython…). Back up the whole 16 MB first, with the side power
+switch on:
+
+```sh
+esptool -p /dev/ttyUSB0 -b 921600 read-flash 0 0x1000000 odroid-go-backup.bin
+```
+
+Flash the release image (`esp-sdr-glow-odroid-go-*.bin` from Releases) at offset 0:
+
+```sh
+esptool -p /dev/ttyUSB0 -b 921600 write-flash 0x0 esp-sdr-glow-odroid-go-vX.Y.Z.bin
+```
+
+(esptool 4.x spells these `read_flash` / `write_flash`.) To go back, write the
+backup the same way: `write-flash 0x0 odroid-go-backup.bin`.
+
+### Build it yourself
+
+Use the ESP-IDF commit pinned in `firmware-targets.json`, as for every ESP-SDR
+target:
+
+```sh
+. ~/esp/esp-idf/export.sh
+IDF_COMPONENT_MANAGER=0 idf.py -B build-odroid-go -DIDF_TARGET=esp32 \
+    -DSDKCONFIG=build-odroid-go/sdkconfig -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.odroid-go build
+idf.py -B build-odroid-go -p /dev/ttyUSB0 flash
+```
+
+The board code lives in `main/boards/odroidgo/`: the display driver, buttons
+and battery, the speaker tone and clicks, burst-aware band power, and the UI.
+Shared spectrum helpers are in `main/boards/common/`. The original ESP32
+receiver gained a small local-UI API (`sdr_local_*`) in
+`main/targets/esp32/receiver.c`.
+
+## How it works, and the limits
+
+- **Snapshots, not a stream.** The original ESP32 captures up to 16,380
+  samples at a time: 0.2 ms at 80 MS/s, 1 ms at 16 MS/s. Between snapshots
+  it computes and draws, so roughly 20–30 % of air time is actually heard.
+  GLOW, hold and the statistics accumulate over many snapshots. For gap-free
+  capture and demodulation you need an ESP32-S3/S31 or a real SDR.
+- **Receive only**, about 1.84–2.7 GHz (2.4 GHz ISM is the sweet spot). SPEC
+  and HUNT tune that whole range. Below 2.21 GHz the ESP32 retunes through its
+  experimental 5/6 LO mode, which upstream verified down to 1842 MHz. Besides
+  Wi-Fi, Bluetooth and Zigbee you can see cellular downlinks: LTE/UMTS band 1
+  (2110–2170 MHz), the top of LTE band 3 (to 1880 MHz) and LTE band 7
+  (2620–2690 MHz). The input is matched for 2.4 GHz, so sensitivity drops
+  away from it, but a nearby base station still shows up as flat OFDM bricks.
+- **Levels are in dBFS referred to gain index 50.** Every sample word carries
+  the gain index it was taken with (bits 20–27), so SPEC compensates each
+  sample even under hardware AGC. From index 36 up, one step is about 0.94 dB.
+  This was measured on one unit against the ESP32's own 2400 MHz crystal
+  harmonic. Below 36 the PHY's gain table is not monotonic.
+- **Self-made spurs are handled.** SPI traffic to the display during a capture
+  shows up as a comb of spurs, so every capture waits for the display DMA to
+  finish. The ESP32's own 40 MHz crystal harmonics (2400/2440/2480 MHz) and the
+  LO's DC residue are blanked in SPEC and excluded from channel levels.
+- **Ghosts in the radio dark forest.** Below 2.21 GHz the ESP32's synthesizer
+  runs in its experimental 5/6 mode and sprouts faint blue ghosts that blink
+  out of the dark. One is a comb of lines that follows the centre frequency.
+  Another is a hump that runs away about 3.5 times faster than you tune and
+  has a mirror twin. They are the receiver's own, not something on the air.
+  GLOW makes them easy to spot, and LO hopping makes them fade.
+- **LO hopping (START + B in SPEC)** separates real signals from receiver
+  artefacts, the way a spectrum analyzer's signal-ID mode does. Each frame
+  the LO lands a random whole number of MHz (up to ±1, ±5 or ±10) away from
+  the centre, and the snapshots are drawn at their true frequencies. Real
+  signals keep their columns and build up in GLOW. Anything tied to the LO,
+  such as DC, IQ images or the comb that the 5/6 LO mode sprouts below
+  2.21 GHz, lands somewhere else every frame and fades. Each hop costs a
+  retune of about 15–20 ms, and the span edges are covered less often.
+- **Battery** percentage comes from a tabulated LiPo curve. The ODROID-GO
+  wires its charger status only to the charge LED, so charging cannot be shown.
+- **Opening the serial port resets the board** (DTR/RTS auto-reset), as on most
+  ESP32 boards.
+- Diagnostics over the serial protocol: `OGSTAT?` reports the UI state.
+  `OGSET <page> <tone> <kind> <ch>` sets HUNT up remotely, and
+  `OGSPEC <view> <gain|-1>` sets SPEC up. `OGWF?` dumps per-row waterfall
+  statistics and SPEC timings: capture, sample prep, FFT, log and frame.
+- **Time coverage.** At 80 MS/s the CPU needs about 260 µs of FFT work for
+  every 6.4 µs of air, so SPEC sees roughly 2–3 % of the time at the full
+  span. One waterfall row takes up to 16 snapshots in 30 ms, about 0.4 ms of
+  air. That is why bursty Wi-Fi gives the waterfall horizontal stripes. The
+  16 MS/s span sees five times more air per row.
+
+## Credits
+
+- [ESPARGOS/esp-sdr](https://github.com/ESPARGOS/esp-sdr): the raw I/Q capture
+  this fork is built on (GPL-3.0).
+- [fedaykinofdune/CardputerADV-SDR](https://github.com/fedaykinofdune/CardputerADV-SDR):
+  the on-device board UI pattern and the shared spectrum helpers in
+  `main/boards/common/` (GPL-3.0).
+- [ducalex/retro-go](https://github.com/ducalex/retro-go): the ODROID-GO pin map
+  and display init values.
+- The 5×7 font is the classic Adafruit GFX glcdfont (BSD).
+- Like upstream, much of this fork's code was written with AI assistance
+  (Claude by Anthropic).
+
+esp-sdr-glow is GPL-3.0-or-later, like ESP-SDR.
+
+<hr/>
+
+# ESP-SDR firmware
+
+<img src="espargos-logo.png" width="40%" align="right" alt="ESPARGOS logo">
+
+### Try it yourself: [Project overview](https://espargos.net/espsdr/) · [Browser SDR viewer](https://espargos.net/espsdr/app/) · [Browser firmware installer](https://espargos.net/espsdr/app/flash.html)
+
+
+ESP-SDR turns the ESP32's built-in 2.4 GHz Wi-Fi radio into a
+**software-defined radio (SDR)**. It lets you capture the radio signal itself
+and process it in software, so you can view the spectrum and study signals
+beyond ordinary Wi-Fi packets. No separate SDR hardware is needed. The
+ESP32-C5 also supports reception in the 5 GHz band.
+
+With the help of LLMs, we discovered an undocumented debug path that bypasses
+the chip's fixed-function Wi-Fi modem. This gives software access to raw
+radio samples, called **I/Q samples**, from the built-in receiver. ESP-SDR
+captures short bursts of these samples and sends them to your
+computer over USB or UART for analysis. It can also compute spectra on-device,
+including continuous RF capture on selected chips.
+
+<br clear="all">
+
+![ESP32 radio architecture: an undocumented debug path connects the ADC/DAC to the CPU, bypassing the fixed-function Wi-Fi modem.](sdr-bypass.png)
+
+The diagram shows the hardware's receive and transmit paths; this firmware
+currently implements reception only.
+
+**Parts of the firmware code are AI-generated.**
+While we have a very good understanding of how the IQ sampling functionality works on the ESP32-C61 chip (used in our ESPARGOS One array), making IQ sampling work on the whole range of ESP32 family chips would have been too much work without LLM support.
+
+## Chip support
+
+| Chip | Status | Native USB | UART0 TX / RX | Minimum flash | Special modes / firmware |
+| --- | --- | --- | --- | --- | --- |
+| ESP32 | ✅ | — | GPIO1 / GPIO3 | 2 MB | — |
+| ESP32-C2 | ✅ (26 MHz crystal) | — | GPIO20 / GPIO19 | 2 MB | — |
+| ESP32-C3 | ✅ | Serial/JTAG | GPIO21 / GPIO20 | 2 MB | — |
+| ESP32-C5 | ✅ | Serial/JTAG | GPIO11 / GPIO12 | 2 MB | — |
+| ESP32-C6 | ✅ | Serial/JTAG | GPIO16 / GPIO17 | 2 MB | — |
+| ESP32-C61 | ✅ | Serial/JTAG | GPIO11 / GPIO10 | 2 MB | — |
+| ESP32-H2 | ✅ | Serial/JTAG | GPIO24 / GPIO23 | 2 MB | — |
+| ESP32-H21 | 🚧 | — | — | — | — |
+| ESP32-H4 | 🚧 | — | — | — | — |
+| ESP32-P4 | ❌ | — | — | — | — |
+| ESP32-S2 | ✅ | USB-OTG CDC | GPIO43 / GPIO44 | 4 MB | — |
+| ESP32-S3 | ✅ | Serial/JTAG | GPIO43 / GPIO44 | 2 MB | [Continuous decimated I/Q over USB (15.625–250 kSa/s)](#s3-streaming) |
+| ESP32-S31 | ✅ | Serial/JTAG | GPIO58 / GPIO59 | 2 MB | [High Speed USB / Ethernet streaming at up to 40 MSa/s (experimental)](#s31-streaming) |
+
+✅ Supported · 🚧 Not yet supported · ❌ Unsupported (no integrated radio).
+
+USB, UART, and flash requirements above refer to the standard firmware; see each
+special firmware variant for its board requirements.
+
+## Special Chip- / Board-Specific Modes and Firmware
+
+<a id="s31-streaming"></a>
+
+### **ESP32-S31**: Ethernet / high-speed USB streaming
+
+**Experimental:** The S31 streaming mode is under development. Signal quality,
+including the remaining DC peak, still needs improvement.
+
+The separate **`esp32s31-stream`** firmware targets the ESP32-S31 Function-CoreBoard
+with Gigabit Ethernet and native high-speed USB. It streams receive-only I/Q to
+**[SoapyESPSDR](https://github.com/ESPARGOS/SoapyESPSDR)** and includes an on-device web page for receiver controls and
+status, with rates up to 20 MSa/s over USB and 40 MSa/s over Ethernet using
+8-bit I plus 8-bit Q. The ordinary `esp32s31` firmware provides serial burst/FFT capture
+for ESP-WebSDR. See [streaming build, architecture, and protocol](s31-streaming.md).
+
+![Gqrx displaying an LTE signal at 2.63 GHz, continuously sampled at 40 MSa/s over Ethernet with an ESP32-S31 and SoapyESPSDR.](gqrx-esp-sdr.png)
+
+<a id="s3-streaming"></a>
+
+### **ESP32-S3**: Continuous I/Q streaming over USB
+
+The standard **`esp32s3`** firmware includes an **`IQS`** mode for continuous,
+decimated I/Q streaming over native USB Serial/JTAG. The second core filters
+and decimates the 16 MSa/s capture stream by powers of two from 64 to 1024,
+giving output rates from **250 down to 15.625 kSa/s**, with 4, 8 or 16 bits per
+I and Q component. This mode requires native USB; UART is not supported.
+
+Use [esp-sdr-bridge](https://github.com/z2labs/esp-sdr-bridge) to connect the
+receiver to SDR++, SDR#, Gqrx or GNU Radio through SpyServer / rtl_tcp.
+For custom clients, `IQS 0 64 8 6` starts a 250 kSa/s stream with 8-bit I and
+8-bit Q until the host sends a byte to stop it. Frames include sample indices,
+gap flags and CRC32 checksums; host stalls or processing overruns can cause
+sample loss. See the [continuous I/Q protocol](iq-stream.md) for command
+options, sample formats, filtering and frequency-offset tuning.
+
+## On-chip spectrum streaming
+
+The firmware can compute FFTs on the device and send compact spectra instead
+of raw I/Q. The viewer queries each device's supported rates, FFT sizes and
+transport before offering this mode.
+
+| Chip | Continuous RF capture with on-chip FFT | Snapshot FFT |
+| --- | --- | --- |
+| ESP32 | — | 256–2048 bins; 16/40/80 MS/s; UART |
+| ESP32-C2 | — | 256–2048 bins; 80/40/16 MS/s; UART |
+| ESP32-C3 | — | 256–2048 bins; 80 MS/s; USB or UART |
+| ESP32-C5 | — | 256–2048 bins; 4/8/10/20/40/80 MS/s |
+| ESP32-C6 | 256 bins; 80 MS/s; native USB | 512–2048 bins over USB; 256–2048 over UART |
+| ESP32-H2 | — | 256–2048 bins; 6.4/10.667/16/32 MS/s; USB or UART |
+| ESP32-C61 | 256 bins; 4/8/10/20/40/80 MS/s; native USB | 512–2048 bins over USB; 256–2048 over UART |
+| ESP32-S2 | — | 256–2048 bins; 16/40/80 MS/s; USB or UART |
+| ESP32-S3 | 256–2048 bins; 16/40/80 MS/s; native USB | — |
+| ESP32-S31 | 256–2048 bins; 4/8/10/20/40/80 MS/s; native USB | Same FFT sizes and rates over UART |
+
+Continuous capture keeps the RF writer running, but the CPU analyzes only
+selected FFT windows. It does **not** deliver every sample or guarantee that
+every short RF event will be visible. Snapshot FFT stops reception between
+captures; the viewer labels these gaps explicitly. Raw I/Q capture remains
+available separately.
+
+The original S3 Turbo Mode was developed by Zoltan Doczi from
+[Z2Labs](https://www.z2labs.io/). The shared implementation extends it with
+C6/C61 bank rotation, S31 dual-core SIMD processing with
+continuous bank rotation, and portable snapshot FFTs.
+See [spectrum protocol and hardware validation](spectrum.md) for the
+wire format, limitations and test results. The S3 ring diagnostic host tool
+is [tools/s3_ring.py](../tools/s3_ring.py).
+
+GPIO outputs can be controlled from the browser’s GPIO section or the serial
+protocol. Firmware reports available pins; each supports high impedance (Z),
+low (0), or high (1). See [GPIO controls](rx-controls.md#gpio-outputs).
+
+## Commands and transport
+
+Connect over native USB or a 3.3 V USB-to-UART adapter with crossed TX/RX
+and common ground, using the pins above. Both interfaces carry the same
+request/response protocol: send newline-terminated ASCII commands and read
+text replies. Capture replies also include a binary I/Q payload.
+
+Query `INFO` and `CAPS` to identify the firmware and supported features.
+`VERSION?` reports the Git revision and UTC build date/time; see
+[firmware version reporting](firmware-version.md).
+`LIMITS?` reports receive-control limits, `RANGE?` reports the tuning range,
+and `TRANSPORT?` identifies the active interface. Configure reception with
+`FREQ <MHz>`, `BANDWIDTH <MHz>` and `GAIN` commands.
+
+Request a snapshot with `CAP16 <samples> <rate-index>` for signed 8-bit I/Q
+or `CAP20 <samples> <rate-index>` for packed signed 10-bit I/Q. The reply is
+`DATA <samples> <crc32-hex> <capture-microseconds>`, followed by exactly
+`ceil(samples × bits-per-component × 2 / 8)` binary bytes. Verify the
+payload CRC32 before using the samples. Rate indices 0–6 select 80, 40, 20, 10,
+8, 4 or 16 MS/s respectively; use only rates advertised by `LIMITS?`.
+
+Finish reading each reply before sending another command. Failures return
+`ERR <reason>`. `SYNC <nonce>` echoes the nonce to let clients resynchronize
+after an incomplete transfer. One client controls the radio at a time;
+`RELEASE` or five seconds of idle time releases it, while other clients
+receive `ERR busy`.
+
+## Build and flash
+
+[firmware-targets.json](../firmware-targets.json) lists the supported firmware variants and
+pins their ESP-IDF commits, including the preview SDK for S31. Check out the
+matching SDK, initialize its submodules, run `install.sh <target>`, and source
+`export.sh`.
+
+Use a separate build directory and configuration for each chip:
+
+```sh
+idf.py -B build-s3 -DIDF_TARGET=esp32s3 \
+  -DSDKCONFIG=sdkconfig.s3 \
+  -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.esp32s3 build
+idf.py -B build-s3 -p /dev/ttyACM0 flash
+```
+
+Substitute the target and paths for your chip. S31 also requires `idf.py --preview`.
+
+The C2 firmware uses a **26 MHz crystal**, as on the tested ESP8684H board.
+For a 40 MHz board, select `CONFIG_XTAL_FREQ_40=y` in menuconfig and rebuild;
+the packaged browser image requires 26 MHz. C2 uses UART0 at 2 Mbaud by
+default. With a CH340 bridge, use the viewer's **Switch to 1 Mbaud** warning
+when transfers lose bytes; baud changes are session-only. C2 provides raw
+IQ8/IQ10 captures, hardware/manual gain, and snapshot FFTs. Continuous capture
+is not advertised; approximate analog bandwidth covers 12–20 MHz.
+See [C2 backend and validation](esp32c2.md).
+
+The `esp32h2` firmware uses the Bluetooth PHY capture engine and supports
+both native USB Serial/JTAG and UART0. It supports 32, 16, approximately 10.667 and 6.4 MS/s hardware sampling,
+plus approximately 4–11 MHz analog bandwidth control.
+See [H2 backend and validation](esp32h2.md).
+
+## Source layout
+
+- `main/targets/<target>/`: chip receiver or adapter, tuning helpers, and the
+  linker guard for its capture SRAM. CMake selects only the requested target.
+- `main/targets/esp32s31/burst/`: serial IQ capture and on-chip FFT firmware.
+- `main/targets/esp32s31/streaming/`: continuous USB/Ethernet IQ application for
+  SoapyESPSDR. Both S31 firmware variants share `main/targets/esp32s31/tuning.h`.
+- `main/families/c5_c6_c61/`: receiver shared by C5, C6, and C61; its `chip.h`
+  comes from the selected target directory.
+- `main/common/`: burst serial transport, gain control, limits, and bandwidth
+  helpers. The gain-table wrapper is linked only for C61 and S31.
+- `main/diagnostics/`: optional register probes, excluded from release exports.
+- `platform/esp32s2/`: pinned ROM USB CDC compatibility component.
+
+The application component and UART configuration stay in `main/`. Target SDK
+defaults stay at the repository root for the build tools and ESP-IDF defaults
+lookup. The firmware uses the burst protocol over UART/native USB; the separate
+`main/targets/esp32s31/streaming/` application implements the receive-only Ethernet and
+vendor USB streaming firmware.
+
+Run `python3 -m unittest discover -s tests` for host checks. Build every firmware variant
+with `tools/build_firmware.py` and its pinned SDK before distributing a change;
+the CI matrix does this automatically. Preserve the target SRAM guards and
+gain-table linker wrappers when moving or refactoring receiver code.
+
+## Receive controls
+
+Hardware AGC is the default. `GAIN MANUAL <index>` sets manual gain;
+`GAIN HARDWARE` restores AGC. `LIMITS?` reports available gain indices,
+bandwidths, sample rates and bit depths. `BANDWIDTH <MHz>` sets approximate
+analog bandwidth; zero selects the widest setting.
+
+All supported burst targets accept tuning attempts from **100–6000 MHz in 1 MHz steps**.
+The viewer shows an informational warning outside 2400–2483.5 MHz, with
+5150–5895 MHz also treated as the supported 5 GHz Wi-Fi band on C5. The warning never blocks tuning.
+These are software attempt limits, not a guaranteed reception range.
+ESP32, S2, S3, C2, C3 and C6 automatically use the experimental **5/6 LO mode from
+1842–2209 MHz**, extending reception down to about **1.84 GHz** on the tested
+boards. No extra command or browser setting is needed. An equivalent divider
+mode is not yet verified on C5, C61, H2 or S31. C61 and S31 instead recover
+failed low-band PLL calibration automatically, with reception verified down
+to **2.18 GHz and 2.15 GHz**, respectively, on the tested boards. This uses
+hardware capacitor calibration and also applies to S31 streaming; the
+achievable range depends on the individual chip.
+
+- **ESP32:** 80/40/16 MS/s.
+- **C2:** 80/40/16 MS/s; up to 8,190 complex samples; approximately 12–20 MHz analog bandwidth.
+- **H2:** 32/16/10.667/6.4 MS/s; approximately 4–11 MHz analog bandwidth; up to 16,380 complex samples.
+- **C3:** 80 MS/s; 14–62 MHz analog bandwidth.
+- **C5:** 11–48 MHz bandwidth; selects its 5 GHz RF path above 3000 MHz.
+- **C61:** 80/40/20/10/8/4 MS/s; 13–54 MHz bandwidth.
+- **C6:** 80 MS/s; 12–54 MHz bandwidth.
+- **S2:** 80/40/16 MS/s; 15–60 MHz bandwidth; up to 12,284 complex samples.
+- **S3:** 13–69 MHz bandwidth.
+- **S31:** 80/40/20/10/8/4 MS/s; 13–54 MHz bandwidth.
+
+Captures have gaps; nominal sample rates exceed sustained serial throughput.
+Gain and power are uncalibrated. Extended tuning does not guarantee PLL lock
+or reception; the viewer uses the ISM-band warning described above.
+
+See [receive-control details](rx-controls.md).
+
+## Contributors
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://github.com/Jeija">
+        <img src="https://github.com/Jeija.png?size=160" width="80" height="80" alt="Florian Euchner"><br>
+        <b>Florian Euchner</b>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/zodoczi">
+        <img src="https://github.com/zodoczi.png?size=160" width="80" height="80" alt="Zoltan Doczi"><br>
+        <b>Zoltan Doczi</b>
+      </a>
+    </td>
+    <td align="center">
+      <a href="https://github.com/14sea">
+        <img src="https://github.com/14sea.png?size=160" width="80" height="80" alt="14sea"><br>
+        <b>14sea</b>
+      </a>
+    </td>
+  </tr>
+</table>
+
+Special thanks to [h0m3us3r](https://github.com/h0m3us3r) for providing
+[eSpDR](https://github.com/h0m3us3r/eSpDR), whose 5/6 LO investigation informed
+our lower-frequency tuning implementation.
+
+## License
+
+ESP-SDR is licensed under the GNU General Public License as published by the
+Free Software Foundation, either version 3 of the License, or (at your option)
+any later version (`GPL-3.0-or-later`). See [LICENSE](../LICENSE) for the full terms.
+It is provided without any warranty, including implied warranties of
+merchantability or fitness for a particular purpose.
+
+**We chose the GPL because we want improvements to ESP-SDR to make their way
+back to the community**. When you distribute modified versions, the GPL requires
+you to make the corresponding source available to recipients under the GPL,
+so they can study, share, and build on those improvements. We encourage you to
+contribute changes upstream, but the GPL does not require upstream submissions
+or publication of private modifications. See the
+[GNU GPL FAQ](https://www.gnu.org/licenses/gpl-faq.html#UnreleasedMods).
+
+The discovery of the capture mechanism itself is not protected by copyright:
+copyright covers the code and other copyrightable expression, not the
+underlying facts, ideas, or methods. **You are free to independently implement
+the mechanism in your own projects under a license of your choice**.
+
+Third-party components retain their own licenses and copyright notices,
+including the Apache-2.0 ESP-IDF compatibility code in
+`platform/esp32s2/esp_usb_cdc_rom_console/`, the pinned
+[ESP-DSP component](../components/esp-dsp/LICENSE), and the derived FFT kernels
+in `main/targets/esp32s3/s3_fft_rnd.S` and `main/targets/esp32s31/burst/s31_fft_rnd.S`.
