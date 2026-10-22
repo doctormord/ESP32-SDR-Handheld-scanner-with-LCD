@@ -1919,6 +1919,27 @@ bool board_ui_command(const char *line) {
         burst_serial_send(buf, n);
         return true;
     }
+    /* TDSCANCH c [ms]: scan channel c only (passive for ms if given) and
+     * list what answered, raw. */
+    int pms = 0;
+    if (sscanf(line, "TDSCANCH %d %d", &p, &pms) >= 1 && p >= 1 && p <= 13 && !sdr_local_ble_boot()) {
+        extern unsigned sdr_scan_passive_ms __attribute__((weak));
+        if (&sdr_scan_passive_ms) sdr_scan_passive_ms = pms > 0 ? (unsigned)pms : 0;
+        lock_lcd();
+        td_lcd_idle();
+        const int64_t t0 = esp_timer_get_time();
+        const int n = sdr_local_wifi_scan(found, SCAN_MAX, (uint16_t)(1u << p));
+        const unsigned us = (unsigned)(esp_timer_get_time() - t0);
+        if (&sdr_scan_passive_ms) sdr_scan_passive_ms = 0;
+        unlock_lcd();
+        int m = snprintf(buf, sizeof(buf), "TDSCANCH %d n %d us %u\n", p, n, us);
+        burst_serial_send(buf, m);
+        for (int i = 0; i < n; i++) {
+            m = snprintf(buf, sizeof(buf), "  ch %d rssi %d '%s'\n", found[i].channel, found[i].rssi, found[i].ssid);
+            burst_serial_send(buf, m);
+        }
+        return true;
+    }
     if (!strcmp(line, "TDBLE?")) {
         UI_BSS static sdr_local_ble_t l[BL_MAX];
         const int n = sdr_local_ble_list(l, BL_MAX);
