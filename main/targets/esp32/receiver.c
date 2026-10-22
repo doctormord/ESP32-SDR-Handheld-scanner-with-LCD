@@ -8,6 +8,7 @@
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "burst_serial.h"
 #include "burst_gpio.h"
 #include "burst_version.h"
@@ -257,14 +258,63 @@ void sdr_local_set_cal_span(unsigned mhz) { cal_span_mhz = mhz; }
 /* The original ESP32 has snapshots only, but the channelizer (narrow = 2)
  * needs no gapless run: like the S3 it transforms 64 pairs every 16 us, and a
  * BLE packet (>= 80 us) meets several of them. Snapshots of 193 us at
- * 80 Msps follow each other as closely as the transforms allow; filter, bus
- * owner and calibration are set once per run, so a snapshot costs its
- * duration, ~0.3 ms of FFTs and little else (about a third of the time
- * listened, as on the S3). Other envelope modes need the S3 ring. */
+ * 80 Msps follow each other as closely as possible; filter, bus owner and
+ * calibration are set once per run. Each snapshot's 13 windows (3 KB) are
+ * copied out of the aperture; with two cores the second one transforms them
+ * while the first takes the next snapshot (~0.3 ms of FFTs per 0.19 ms
+ * snapshot otherwise). Other envelope modes need the S3 ring. */
 #define ENV_N 64u
 #define ENV_STRIDE 1280u                         /* 16 us at 80 Msps */
-#define ENV_PAIRS (12u * ENV_STRIDE + ENV_N)     /* 13 transforms per snapshot */
+#define ENV_WINS 13u                             /* transforms per snapshot */
+#define ENV_PAIRS ((ENV_WINS - 1u) * ENV_STRIDE + ENV_N)
 static inline int env_s10(uint32_t v) { return (int)(v << 22) >> 22; }
+static struct {
+    float *spec, *out;
+    float max;
+    uint32_t blocks;
+} env_run;
+static float env_win[ENV_N], env_buf[2 * ENV_N] __attribute__((aligned(16)));
+/* One snapshot's windows into its slot: per-bin max-hold, slot peak. */
+static void env_transform(const uint32_t *w, unsigned slot) {
+    float *row = env_run.spec + slot * ENV_N, peak = 0;
+    for (unsigned t = 0; t < ENV_WINS; t++, w += ENV_N) {
+        float mi = 0, mq = 0;
+        for (unsigned n = 0; n < ENV_N; n++) {mi += env_s10(w[n]); mq += env_s10(w[n] >> 10);}
+        mi /= ENV_N;
+        mq /= ENV_N;
+        /* Conjugate: RF above the LO arrives at negative frequency. */
+        for (unsigned n = 0; n < ENV_N; n++) {
+            env_buf[2 * n] = (env_s10(w[n]) - mi) * env_win[n];
+            env_buf[2 * n + 1] = (mq - env_s10(w[n] >> 10)) * env_win[n];
+        }
+        dsps_fft2r_fc32(env_buf, ENV_N);
+        dsps_bit_rev_fc32(env_buf, ENV_N);
+        for (unsigned k = 0; k < ENV_N; k++) {
+            const float pw = env_buf[2 * k] * env_buf[2 * k] + env_buf[2 * k + 1] * env_buf[2 * k + 1];
+            float *o = row + ((k + ENV_N / 2) & (ENV_N - 1)); /* bin 0 = lowest RF */
+            if (pw > *o) *o = pw;
+            if (pw > peak) peak = pw;
+        }
+        env_run.blocks++;
+    }
+    const float d = 10 * log10f(peak + 1e-3f);
+    if (d > env_run.out[slot]) env_run.out[slot] = d;
+    if (d > env_run.max) env_run.max = d;
+}
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+static TaskHandle_t env_task;
+static SemaphoreHandle_t env_idle;       /* given when the worker has no job */
+static const uint32_t *volatile env_job_w;
+static volatile unsigned env_job_slot;
+static void env_worker(void *arg) {
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        env_transform(env_job_w, env_job_slot);
+        xSemaphoreGive(env_idle);
+    }
+}
+#endif
 bool sdr_local_envelope(unsigned ms, unsigned divider, unsigned narrow, float *out, unsigned slots,
                         const float *gain_db, float *max, uint32_t *blocks, float *spec) {
     (void)gain_db;
@@ -273,9 +323,24 @@ bool sdr_local_envelope(unsigned ms, unsigned divider, unsigned narrow, float *o
     if (narrow != 2 || divider != 0 || !spec || !slots || !ms) return false;
     /* The board UI's band analysis set up the float tables (any size >= 64). */
     if (!dsps_fft2r_initialized && dsps_fft2r_init_fc32(NULL, 512) != ESP_OK) return false;
-    static float win[ENV_N], buf[2 * ENV_N] __attribute__((aligned(16)));
-    if (win[1] == 0)
-        for (unsigned n = 0; n < ENV_N; n++) win[n] = 0.5f - 0.5f * cosf(2 * (float)M_PI * n / ENV_N);
+    if (env_win[1] == 0)
+        for (unsigned n = 0; n < ENV_N; n++) env_win[n] = 0.5f - 0.5f * cosf(2 * (float)M_PI * n / ENV_N);
+    static uint32_t copy[2][ENV_WINS * ENV_N];
+    unsigned cur = 0;
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+    if (!env_task) {
+        env_idle = xSemaphoreCreateBinary();
+        xSemaphoreGive(env_idle);
+        xTaskCreatePinnedToCore(env_worker, "env", 3072, NULL, configMAX_PRIORITIES - 2, &env_task, 1);
+    }
+    const bool dual = env_task != NULL;
+#else
+    const bool dual = false;
+#endif
+    env_run.spec = spec;
+    env_run.out = out;
+    env_run.max = -200;
+    env_run.blocks = 0;
     if (rx_recalibration_stale()) prepare_rx();
     filter_apply();
     const uint32_t owner = DPORT_REG_READ(DPORT_IRAM_DRAM_AHB_SEL_REG);
@@ -296,34 +361,26 @@ bool sdr_local_envelope(unsigned ms, unsigned divider, unsigned narrow, float *o
         REG_WRITE(DUMP_CTRL, 0);
         DPORT_REG_WRITE(DPORT_IRAM_DRAM_AHB_SEL_REG, owner);
         if (!done) break;
-        float *row = spec + slot * ENV_N, peak = 0;
-        for (unsigned j = 0; j + ENV_N <= ENV_PAIRS; j += ENV_STRIDE) {
-            const uint32_t *p = samples + j;
-            float mi = 0, mq = 0;
-            for (unsigned n = 0; n < ENV_N; n++) {mi += env_s10(p[n]); mq += env_s10(p[n] >> 10);}
-            mi /= ENV_N;
-            mq /= ENV_N;
-            /* Conjugate: RF above the LO arrives at negative frequency. */
-            for (unsigned n = 0; n < ENV_N; n++) {
-                buf[2 * n] = (env_s10(p[n]) - mi) * win[n];
-                buf[2 * n + 1] = (mq - env_s10(p[n] >> 10)) * win[n];
-            }
-            dsps_fft2r_fc32(buf, ENV_N);
-            dsps_bit_rev_fc32(buf, ENV_N);
-            for (unsigned k = 0; k < ENV_N; k++) {
-                const float pw = buf[2 * k] * buf[2 * k] + buf[2 * k + 1] * buf[2 * k + 1];
-                float *o = row + ((k + ENV_N / 2) & (ENV_N - 1)); /* bin 0 = lowest RF */
-                if (pw > *o) *o = pw;
-                if (pw > peak) peak = pw;
-            }
-            (*blocks)++;
-        }
-        const float d = 10 * log10f(peak + 1e-3f);
-        if (d > out[slot]) out[slot] = d;
-        if (d > *max) *max = d;
+        for (unsigned t = 0; t < ENV_WINS; t++)
+            memcpy(copy[cur] + t * ENV_N, samples + t * ENV_STRIDE, ENV_N * sizeof(uint32_t));
+        if (dual) {
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+            /* The worker finished the snapshot before (its copy is the other one). */
+            xSemaphoreTake(env_idle, portMAX_DELAY);
+            env_job_w = copy[cur];
+            env_job_slot = slot;
+            xTaskNotifyGive(env_task);
+#endif
+        } else env_transform(copy[cur], slot);
+        cur ^= 1;
     }
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+    if (dual) {xSemaphoreTake(env_idle, portMAX_DELAY); xSemaphoreGive(env_idle);}
+#endif
     REG_WRITE(DUMP_BYTES, byte_select);
     filter_restore();
+    *max = env_run.max;
+    *blocks = env_run.blocks;
     return *blocks > 0;
 }
 /* No BLE in the T-Display build (IRAM). */

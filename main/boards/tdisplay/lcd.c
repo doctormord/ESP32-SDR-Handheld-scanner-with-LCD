@@ -3,7 +3,13 @@
  * VSPI's own IO_MUX pins, so 80 MHz is possible besides the safe 40 MHz
  * (CONFIG_ESP_SDR_TDISPLAY_SPI_MHZ). Only panel IO is needed: init list,
  * window, RAMWR. The visible area sits at an offset inside the controller's
- * RAM (TFT_eSPI rotation 1: columns +40, rows +53). */
+ * RAM (TFT_eSPI rotation 1: columns +40, rows +53).
+ * With a whole frame in internal RAM (65 KB) drawing only touches RAM and
+ * td_lcd_idle() sends the finished frame in one DMA transfer (~6.5 ms at
+ * 80 MHz): on two cores the picture is drawn while the receiver measures,
+ * and only the transfer keeps the bus busy. Without the RAM the strips go
+ * out one by one as before. */
+#include <string.h>
 #include "sdkconfig.h"
 #include "td_board.h"
 #include "driver/gpio.h"
@@ -34,6 +40,8 @@ static esp_lcd_panel_io_handle_t io;
 static SemaphoreHandle_t free_strips;
 static uint16_t *strips[2];
 static unsigned next_strip;
+static uint16_t *frame;                  /* whole picture, or NULL: strip mode */
+static volatile bool frame_changed, frame_defer;
 
 static bool on_done(esp_lcd_panel_io_handle_t h, esp_lcd_panel_io_event_data_t *e, void *ctx) {
     (void)h; (void)e; (void)ctx;
@@ -43,6 +51,15 @@ static bool on_done(esp_lcd_panel_io_handle_t h, esp_lcd_panel_io_event_data_t *
 }
 
 static void cmd(uint8_t c, const uint8_t *data, size_t n) { esp_lcd_panel_io_tx_param(io, c, data, n); }
+
+static void window(int x, int y, int w, int h) {
+    const int x0 = x + COL_OFFSET, y0 = y + ROW_OFFSET;
+    const int x1 = x0 + w - 1, y1 = y0 + h - 1;
+    const uint8_t ca[4] = {(uint8_t)(x0 >> 8), (uint8_t)x0, (uint8_t)(x1 >> 8), (uint8_t)x1};
+    const uint8_t ra[4] = {(uint8_t)(y0 >> 8), (uint8_t)y0, (uint8_t)(y1 >> 8), (uint8_t)y1};
+    cmd(0x2A, ca, 4); /* CASET */
+    cmd(0x2B, ra, 4); /* RASET */
+}
 
 void td_lcd_init(void) {
     free_strips = xSemaphoreCreateCounting(2, 2);
@@ -115,6 +132,20 @@ void td_lcd_init(void) {
     cmd(0x29, NULL, 0); /* DISPON */
 }
 
+bool td_lcd_try_frame(size_t keep) {
+    const size_t need = (size_t)TD_LCD_W * TD_LCD_H * 2;
+    const unsigned caps = MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL;
+    if (!frame && heap_caps_get_largest_free_block(caps) >= need && heap_caps_get_free_size(caps) >= need + keep) {
+        td_lcd_idle();
+        frame = heap_caps_calloc(need / 2, 2, caps);
+    }
+    return frame != NULL;
+}
+
+bool td_lcd_has_frame(void) { return frame != NULL; }
+void td_lcd_defer(bool on) { frame_defer = on; }
+uint16_t *td_lcd_strip_at(int y) { return frame && y >= 0 && y < TD_LCD_H ? frame + y * TD_LCD_W : td_lcd_strip(); }
+
 void td_lcd_backlight(unsigned percent) {
     if (percent > 100) percent = 100;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, percent * 1023 / 100);
@@ -122,6 +153,7 @@ void td_lcd_backlight(unsigned percent) {
 }
 
 uint16_t *td_lcd_strip(void) {
+    if (frame) return strips[0]; /* scratch only: td_lcd_blit copies it into the frame */
     xSemaphoreTake(free_strips, pdMS_TO_TICKS(200));
     uint16_t *s = strips[next_strip];
     next_strip ^= 1;
@@ -131,18 +163,30 @@ uint16_t *td_lcd_strip(void) {
 void td_lcd_idle(void) {
     for (int i = 0; i < 2; i++) xSemaphoreTake(free_strips, pdMS_TO_TICKS(100));
     for (int i = 0; i < 2; i++) xSemaphoreGive(free_strips);
+    if (!frame || !frame_changed || frame_defer) return;
+    /* The finished frame in one transfer; wait for it, then the bus is quiet. */
+    frame_changed = false;
+    for (int i = 0; i < 2; i++) xSemaphoreTake(free_strips, pdMS_TO_TICKS(100));
+    window(0, 0, TD_LCD_W, TD_LCD_H);
+    esp_lcd_panel_io_tx_color(io, 0x2C, frame, (size_t)TD_LCD_W * TD_LCD_H * 2);
+    xSemaphoreTake(free_strips, pdMS_TO_TICKS(100)); /* given when the transfer ends */
+    for (int i = 0; i < 2; i++) xSemaphoreGive(free_strips);
 }
 
 void td_lcd_blit(int x, int y, int w, int h, uint16_t *strip) {
+    if (frame) {
+        /* Into the frame (nothing to copy when drawn there in place). */
+        for (int r = 0; r < h && y + r < TD_LCD_H; r++) {
+            uint16_t *dst = frame + (y + r) * TD_LCD_W + x;
+            if (dst != strip + r * w) memcpy(dst, strip + r * w, (size_t)w * 2);
+        }
+        frame_changed = true;
+        return;
+    }
     if (w <= 0 || h <= 0) {
         xSemaphoreGive(free_strips);
         return;
     }
-    const int x0 = x + COL_OFFSET, y0 = y + ROW_OFFSET;
-    const int x1 = x0 + w - 1, y1 = y0 + h - 1;
-    const uint8_t ca[4] = {(uint8_t)(x0 >> 8), (uint8_t)x0, (uint8_t)(x1 >> 8), (uint8_t)x1};
-    const uint8_t ra[4] = {(uint8_t)(y0 >> 8), (uint8_t)y0, (uint8_t)(y1 >> 8), (uint8_t)y1};
-    cmd(0x2A, ca, 4); /* CASET */
-    cmd(0x2B, ra, 4); /* RASET */
+    window(x, y, w, h);
     esp_lcd_panel_io_tx_color(io, 0x2C, strip, (size_t)w * h * 2);
 }
