@@ -201,10 +201,12 @@ extern void rom_set_rf_freq_offset(unsigned crystal, unsigned mhz, int offset);
 /* A board UI that hops between nearby LOs and removes DC itself may keep one
  * calibration across them (sdr_local_set_cal_span). */
 static unsigned cal_span_mhz;
+static bool cal_elsewhere;  /* a Wi-Fi scan calibrated for its own channels */
 static void tune_rx(unsigned mhz) {
     static unsigned calibrated_mhz;
     const unsigned off = calibrated_mhz > mhz ? calibrated_mhz - mhz : mhz - calibrated_mhz;
-    if (!calibrated_mhz || off > cal_span_mhz || rx_recalibration_stale()) {
+    if (!calibrated_mhz || off > cal_span_mhz || rx_recalibration_stale() || cal_elsewhere) {
+        cal_elsewhere = false;
         rx_recalibrate(mhz);
         calibrated_mhz = mhz;
     }
@@ -260,23 +262,27 @@ void sdr_local_set_cal_span(unsigned mhz) { cal_span_mhz = mhz; }
  * BLE packet (>= 80 us) meets several of them. Snapshots of 193 us at
  * 80 Msps follow each other as closely as possible; filter, bus owner and
  * calibration are set once per run. Each snapshot's 13 windows (3 KB) are
- * copied out of the aperture; with two cores the second one transforms them
- * while the first takes the next snapshot (~0.3 ms of FFTs per 0.19 ms
- * snapshot otherwise). Other envelope modes need the S3 ring. */
+ * copied out of the aperture and transformed (~0.5 ms, longer than the
+ * snapshot). With two cores the snapshots alternate: every other one goes to
+ * a worker on core 1 while core 0 takes the next and transforms that itself;
+ * each core keeps its own max-hold, merged at the end of the run. Other
+ * envelope modes need the S3 ring. */
 #define ENV_N 64u
 #define ENV_STRIDE 1280u                         /* 16 us at 80 Msps */
 #define ENV_WINS 13u                             /* transforms per snapshot */
 #define ENV_PAIRS ((ENV_WINS - 1u) * ENV_STRIDE + ENV_N)
+#define ENV_SLOTS_MAX 16u
 static inline int env_s10(uint32_t v) { return (int)(v << 22) >> 22; }
-static struct {
-    float *spec, *out;
+typedef struct {
+    float *spec, *out;                   /* [slots * ENV_N], [slots] */
     float max;
     uint32_t blocks;
-} env_run;
-static float env_win[ENV_N], env_buf[2 * ENV_N] __attribute__((aligned(16)));
+    float buf[2 * ENV_N] __attribute__((aligned(16)));
+} env_acc_t;
+static float env_win[ENV_N];
 /* One snapshot's windows into its slot: per-bin max-hold, slot peak. */
-static void env_transform(const uint32_t *w, unsigned slot) {
-    float *row = env_run.spec + slot * ENV_N, peak = 0;
+static void env_transform(env_acc_t *a, const uint32_t *w, unsigned slot) {
+    float *row = a->spec + slot * ENV_N, *buf = a->buf, peak = 0;
     for (unsigned t = 0; t < ENV_WINS; t++, w += ENV_N) {
         float mi = 0, mq = 0;
         for (unsigned n = 0; n < ENV_N; n++) {mi += env_s10(w[n]); mq += env_s10(w[n] >> 10);}
@@ -284,24 +290,27 @@ static void env_transform(const uint32_t *w, unsigned slot) {
         mq /= ENV_N;
         /* Conjugate: RF above the LO arrives at negative frequency. */
         for (unsigned n = 0; n < ENV_N; n++) {
-            env_buf[2 * n] = (env_s10(w[n]) - mi) * env_win[n];
-            env_buf[2 * n + 1] = (mq - env_s10(w[n] >> 10)) * env_win[n];
+            buf[2 * n] = (env_s10(w[n]) - mi) * env_win[n];
+            buf[2 * n + 1] = (mq - env_s10(w[n] >> 10)) * env_win[n];
         }
-        dsps_fft2r_fc32(env_buf, ENV_N);
-        dsps_bit_rev_fc32(env_buf, ENV_N);
+        dsps_fft2r_fc32(buf, ENV_N);
+        dsps_bit_rev_fc32(buf, ENV_N);
         for (unsigned k = 0; k < ENV_N; k++) {
-            const float pw = env_buf[2 * k] * env_buf[2 * k] + env_buf[2 * k + 1] * env_buf[2 * k + 1];
+            const float pw = buf[2 * k] * buf[2 * k] + buf[2 * k + 1] * buf[2 * k + 1];
             float *o = row + ((k + ENV_N / 2) & (ENV_N - 1)); /* bin 0 = lowest RF */
             if (pw > *o) *o = pw;
             if (pw > peak) peak = pw;
         }
-        env_run.blocks++;
+        a->blocks++;
     }
     const float d = 10 * log10f(peak + 1e-3f);
-    if (d > env_run.out[slot]) env_run.out[slot] = d;
-    if (d > env_run.max) env_run.max = d;
+    if (d > a->out[slot]) a->out[slot] = d;
+    if (d > a->max) a->max = d;
 }
+static env_acc_t env_main;
 #if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+static env_acc_t env_side;               /* the worker's, with its own spectrum */
+static float env_side_spec[ENV_SLOTS_MAX * ENV_N], env_side_out[ENV_SLOTS_MAX];
 static TaskHandle_t env_task;
 static SemaphoreHandle_t env_idle;       /* given when the worker has no job */
 static const uint32_t *volatile env_job_w;
@@ -310,7 +319,7 @@ static void env_worker(void *arg) {
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        env_transform(env_job_w, env_job_slot);
+        env_transform(&env_side, env_job_w, env_job_slot);
         xSemaphoreGive(env_idle);
     }
 }
@@ -325,29 +334,37 @@ bool sdr_local_envelope(unsigned ms, unsigned divider, unsigned narrow, float *o
     if (!dsps_fft2r_initialized && dsps_fft2r_init_fc32(NULL, 512) != ESP_OK) return false;
     if (env_win[1] == 0)
         for (unsigned n = 0; n < ENV_N; n++) env_win[n] = 0.5f - 0.5f * cosf(2 * (float)M_PI * n / ENV_N);
-    static uint32_t copy[2][ENV_WINS * ENV_N];
-    unsigned cur = 0;
+    static uint32_t copy[2][ENV_WINS * ENV_N]; /* [0]: the worker's job, [1]: core 0's */
+    env_main.spec = spec;
+    env_main.out = out;
+    env_main.max = -200;
+    env_main.blocks = 0;
 #if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
-    if (!env_task) {
+    if (!env_task && slots <= ENV_SLOTS_MAX) {
         env_idle = xSemaphoreCreateBinary();
         xSemaphoreGive(env_idle);
         xTaskCreatePinnedToCore(env_worker, "env", 3072, NULL, configMAX_PRIORITIES - 2, &env_task, 1);
     }
-    const bool dual = env_task != NULL;
+    const bool dual = env_task != NULL && slots <= ENV_SLOTS_MAX;
+    if (dual) {
+        memset(env_side_spec, 0, slots * ENV_N * sizeof(float));
+        for (unsigned i = 0; i < slots; i++) env_side_out[i] = -200;
+        env_side.spec = env_side_spec;
+        env_side.out = env_side_out;
+        env_side.max = -200;
+        env_side.blocks = 0;
+    }
 #else
     const bool dual = false;
 #endif
-    env_run.spec = spec;
-    env_run.out = out;
-    env_run.max = -200;
-    env_run.blocks = 0;
     if (rx_recalibration_stale()) prepare_rx();
     filter_apply();
     const uint32_t owner = DPORT_REG_READ(DPORT_IRAM_DRAM_AHB_SEL_REG);
     const uint32_t byte_select = REG_READ(DUMP_BYTES);
     REG_WRITE(DUMP_BYTES, 0x03020100);
     const int64_t t0 = esp_timer_get_time(), span = (int64_t)ms * 1000;
-    for (int64_t now = t0; now - t0 < span; now = esp_timer_get_time()) {
+    unsigned n_snap = 0;
+    for (int64_t now = t0; now - t0 < span; now = esp_timer_get_time(), n_snap++) {
         unsigned slot = (unsigned)((now - t0) * slots / span);
         if (slot >= slots) slot = slots - 1;
         /* One snapshot: the MAC owns the aperture only while it writes. */
@@ -361,26 +378,35 @@ bool sdr_local_envelope(unsigned ms, unsigned divider, unsigned narrow, float *o
         REG_WRITE(DUMP_CTRL, 0);
         DPORT_REG_WRITE(DPORT_IRAM_DRAM_AHB_SEL_REG, owner);
         if (!done) break;
-        for (unsigned t = 0; t < ENV_WINS; t++)
-            memcpy(copy[cur] + t * ENV_N, samples + t * ENV_STRIDE, ENV_N * sizeof(uint32_t));
-        if (dual) {
+        const bool side = dual && (n_snap & 1) == 0;
 #if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
-            /* The worker finished the snapshot before (its copy is the other one). */
-            xSemaphoreTake(env_idle, portMAX_DELAY);
-            env_job_w = copy[cur];
+        if (side) xSemaphoreTake(env_idle, portMAX_DELAY); /* its copy is free again */
+#endif
+        uint32_t *c = copy[side ? 0 : 1];
+        for (unsigned t = 0; t < ENV_WINS; t++)
+            memcpy(c + t * ENV_N, samples + t * ENV_STRIDE, ENV_N * sizeof(uint32_t));
+        if (side) {
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+            env_job_w = c;
             env_job_slot = slot;
             xTaskNotifyGive(env_task);
 #endif
-        } else env_transform(copy[cur], slot);
-        cur ^= 1;
+        } else env_transform(&env_main, c, slot);
     }
 #if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
-    if (dual) {xSemaphoreTake(env_idle, portMAX_DELAY); xSemaphoreGive(env_idle);}
+    if (dual) {
+        xSemaphoreTake(env_idle, portMAX_DELAY);
+        xSemaphoreGive(env_idle);
+        for (unsigned i = 0; i < slots * ENV_N; i++) if (env_side_spec[i] > spec[i]) spec[i] = env_side_spec[i];
+        for (unsigned i = 0; i < slots; i++) if (env_side_out[i] > out[i]) out[i] = env_side_out[i];
+        if (env_side.max > env_main.max) env_main.max = env_side.max;
+        env_main.blocks += env_side.blocks;
+    }
 #endif
     REG_WRITE(DUMP_BYTES, byte_select);
     filter_restore();
-    *max = env_run.max;
-    *blocks = env_run.blocks;
+    *max = env_main.max;
+    *blocks = env_main.blocks;
     return *blocks > 0;
 }
 /* No BLE in the T-Display build (IRAM). */
@@ -392,11 +418,11 @@ int sdr_local_ble_scan(unsigned ms) { (void)ms; return -1; }
 int sdr_local_ble_list(sdr_local_ble_t *out, int max) { (void)out; (void)max; return 0; }
 void sdr_local_ble_forget(void) {}
 unsigned scan_phase_us[4]; /* diagnostics: to STA, scan, back to NULL, retune */
+unsigned sdr_scan_passive_ms; /* diagnostics (TDSCANCH c ms): passive scan of this length */
 int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels) {
     /* The scan needs the PHY's own AGC and a real channel. */
     REG_CLR_BIT(RX_GAIN, BIT(23));
     rx_lo_select(false);
-    esp_wifi_set_promiscuous(false);
     int found = -1;
     int64_t t0 = esp_timer_get_time();
     wifi_ap_record_t *rec = max > 0 ? calloc((size_t)max, sizeof(*rec)) : NULL;
@@ -407,31 +433,53 @@ int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels) {
         esp_wifi_set_country_code("DE", false);
         country_set = true;
     }
-    if (rec && esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) {
-        wifi_scan_config_t scan = {
-            .show_hidden = true, .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-            /* Probe responses come within a few ms; beacon-only networks
-             * may need a second pass. */
-            .scan_time.active = {.min = 20, .max = 45},
-            .channel_bitmap = {.ghz_2_channels = channels, .ghz_5_channels = 1},
-        };
+    /* The SDR rebuilds the receiver's DC and gain tables for one frequency.
+     * Channels below that frequency then hear nothing at all (channel 1 is
+     * deaf after a calibration at 2442 MHz, and even at 2422), channels above
+     * it still work (13 after 2442). Only the first scan after power-on, on
+     * the driver's own tables, used to see everything. So the scan calibrates
+     * at channel 1 first, in the idle promiscuous state (in STA mode the PHY's
+     * DC calibration never ends), and the receiver recalibrates for itself
+     * afterwards. */
+    static const struct { uint8_t first, last, cal; } groups[] = {{1, 14, 1}};
+    if (rec) {
         scan_phase_us[0] = (unsigned)(esp_timer_get_time() - t0);
         t0 = esp_timer_get_time();
-        if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
-            uint16_t n = (uint16_t)max;
+        found = 0;
+        for (unsigned g = 0; g < sizeof(groups) / sizeof(groups[0]) && found < max; g++) {
+            uint16_t mask = 0;
+            for (unsigned c = groups[g].first; c <= groups[g].last; c++) mask |= channels & (1u << c);
+            if (!mask) continue;
+            esp_wifi_set_mode(WIFI_MODE_NULL);
+            esp_wifi_set_promiscuous(true);
+            cal_elsewhere = true; /* tune_rx: calibrate here, and once more on the way back */
+            tune_rx(2407 + 5 * groups[g].cal);
+            prepare_rx();
+            cal_elsewhere = true;
+            esp_wifi_set_promiscuous(false);
+            if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) break;
+            wifi_scan_config_t scan = {
+                .show_hidden = true, .scan_type = sdr_scan_passive_ms ? WIFI_SCAN_TYPE_PASSIVE : WIFI_SCAN_TYPE_ACTIVE,
+                /* Probe responses come within a few ms; beacon-only networks
+                 * may need a second pass. */
+                .scan_time.active = {.min = 20, .max = 45},
+                .scan_time.passive = sdr_scan_passive_ms,
+                .channel_bitmap = {.ghz_2_channels = mask, .ghz_5_channels = 1},
+            };
+            if (esp_wifi_scan_start(&scan, true) != ESP_OK) continue;
+            uint16_t n = (uint16_t)(max - found);
             if (esp_wifi_scan_get_ap_records(&n, rec) == ESP_OK) {
-                for (unsigned i = 0; i < n; i++) {
-                    memcpy(out[i].ssid, rec[i].ssid, 32);
-                    out[i].ssid[32] = 0;
-                    memcpy(out[i].bssid, rec[i].bssid, 6);
-                    out[i].rssi = rec[i].rssi;
-                    out[i].channel = rec[i].primary;
-                    out[i].auth = (uint8_t)rec[i].authmode;
+                for (unsigned i = 0; i < n; i++, found++) {
+                    memcpy(out[found].ssid, rec[i].ssid, 32);
+                    out[found].ssid[32] = 0;
+                    memcpy(out[found].bssid, rec[i].bssid, 6);
+                    out[found].rssi = rec[i].rssi;
+                    out[found].channel = rec[i].primary;
+                    out[found].auth = (uint8_t)rec[i].authmode;
                 }
-                found = n;
             }
+            esp_wifi_clear_ap_list();
         }
-        esp_wifi_clear_ap_list();
     }
     free(rec);
     scan_phase_us[1] = (unsigned)(esp_timer_get_time() - t0);

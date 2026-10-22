@@ -446,6 +446,7 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 | `TDSTAT?` | survey state: page, gain, clipping, frame time, touch readings |
 | `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | switch page / mode / sniffer page |
 | `TDSCAN` | full network scan now |
+| `TDSCANCH c [ms]` | scan only channel `c` (passive for `ms` if given) and list every answer, raw (T-Display) |
 | `TDSN?` / `TDNULL` | finder state / zero the finder |
 | `TDDET?` / `TDDETZERO` | detector state (gain, floor, room, margin, per-slot excess) / zero it |
 | `TDSPEC s [gain]` | detector listens for `s` seconds with the display paused, then prints per channel the strongest power and how often it was 15 dB over the median (for "does this device transmit at all?") |
