@@ -62,10 +62,12 @@ static int s3_fofs; /* FOFS: PLL offset in kHz, applied from the next tune */
 /* A board UI that hops between nearby LOs and removes DC itself may keep one
  * calibration across them (sdr_local_set_cal_span). */
 static unsigned cal_span_mhz;
+static bool cal_elsewhere;  /* a Wi-Fi scan calibrated for its channels */
 static void s3_tune(unsigned mhz) {
     static unsigned calibrated_mhz;
     const unsigned off = calibrated_mhz > mhz ? calibrated_mhz - mhz : mhz - calibrated_mhz;
-    if (!calibrated_mhz || off > cal_span_mhz || rx_recalibration_stale()) {
+    if (!calibrated_mhz || off > cal_span_mhz || rx_recalibration_stale() || cal_elsewhere) {
+        cal_elsewhere = false;
         rx_recalibrate(mhz);
         calibrated_mhz = mhz;
     }
@@ -403,7 +405,6 @@ int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels) {
     gain_mode = GAIN_HARDWARE;
     gain_apply();
     rx_lo_select(false);
-    esp_wifi_set_promiscuous(false);
     if (!country_set) {
         /* Germany: channels 1-13 may be scanned actively. */
         esp_wifi_set_country_code("DE", false);
@@ -411,29 +412,50 @@ int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels) {
     }
     int found = -1;
     wifi_ap_record_t *rec = max > 0 ? calloc((size_t)max, sizeof(*rec)) : NULL;
-    if (rec && esp_wifi_set_mode(WIFI_MODE_STA) == ESP_OK) {
-        wifi_scan_config_t scan = {
-            .show_hidden = true, .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-            .scan_time.active = {.min = 20, .max = 45},
-            .channel_bitmap = {.ghz_2_channels = channels, .ghz_5_channels = 1},
-        };
+    /* The SDR rebuilds the receiver's DC and gain tables for one frequency.
+     * Channels below it then hear nothing (channel 1 after a calibration at
+     * 2442 MHz), channels far above lose weak networks (13 after one at
+     * 2412). So the scan runs in two groups, each calibrated at its lowest
+     * channel, in the idle promiscuous state (in STA mode the PHY's DC
+     * calibration does not finish); the receiver recalibrates for itself
+     * afterwards. */
+    static const struct { uint8_t first, last; } groups[] = {{1, 7}, {8, 14}};
+    if (rec) {
         scan_phase_us[0] = (unsigned)(esp_timer_get_time() - t0);
         t0 = esp_timer_get_time();
-        if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
-            uint16_t n = (uint16_t)max;
-            if (esp_wifi_scan_get_ap_records(&n, rec) == ESP_OK) {
-                for (unsigned i = 0; i < n; i++) {
-                    memcpy(out[i].ssid, rec[i].ssid, 32);
-                    out[i].ssid[32] = 0;
-                    memcpy(out[i].bssid, rec[i].bssid, 6);
-                    out[i].rssi = rec[i].rssi;
-                    out[i].channel = rec[i].primary;
-                    out[i].auth = (uint8_t)rec[i].authmode;
+        found = 0;
+        for (unsigned g = 0; g < sizeof(groups) / sizeof(groups[0]) && found < max; g++) {
+            uint16_t mask = 0;
+            for (unsigned c = groups[g].first; c <= groups[g].last; c++) mask |= channels & (1u << c);
+            if (!mask) continue;
+            esp_wifi_set_mode(WIFI_MODE_NULL);
+            esp_wifi_set_promiscuous(true);
+            cal_elsewhere = true;
+            s3_tune(2407 + 5 * groups[g].first);
+            cal_elsewhere = true;
+            rx_lo_select(false);
+            esp_wifi_set_promiscuous(false);
+            if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) break;
+            wifi_scan_config_t scan = {
+                .show_hidden = true, .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+                .scan_time.active = {.min = 20, .max = 45},
+                .channel_bitmap = {.ghz_2_channels = mask, .ghz_5_channels = 1},
+            };
+            if (esp_wifi_scan_start(&scan, true) == ESP_OK) {
+                uint16_t n = (uint16_t)(max - found);
+                if (esp_wifi_scan_get_ap_records(&n, rec) == ESP_OK) {
+                    for (unsigned i = 0; i < n; i++, found++) {
+                        memcpy(out[found].ssid, rec[i].ssid, 32);
+                        out[found].ssid[32] = 0;
+                        memcpy(out[found].bssid, rec[i].bssid, 6);
+                        out[found].rssi = rec[i].rssi;
+                        out[found].channel = rec[i].primary;
+                        out[found].auth = (uint8_t)rec[i].authmode;
+                    }
                 }
-                found = n;
             }
+            esp_wifi_clear_ap_list();
         }
-        esp_wifi_clear_ap_list();
     }
     free(rec);
     scan_phase_us[1] = (unsigned)(esp_timer_get_time() - t0);
