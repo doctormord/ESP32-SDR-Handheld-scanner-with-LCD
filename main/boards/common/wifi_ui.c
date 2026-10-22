@@ -114,6 +114,7 @@ static int64_t range_at;
 static float clip_rate;
 UI_BSS static uint16_t lut[256];
 static unsigned frame_us, scan_us, rows, tune_us, caps, render_us, keys_us, cap_us, ana_us, drawn;
+static bool frame_ram;            /* the board keeps a whole frame in RAM (draws on core 1) */
 /* The display has its own task: while a frame goes out by DMA, the CPU
  * analyses the last capture. Only the capture itself (~0.5 ms) waits for a
  * quiet SPI bus, so 50 frames/s cost the IQ path nothing. lcd_lock is held
@@ -1600,10 +1601,28 @@ static void draw_frame(void) {
     drawn++;
 }
 
+#if defined(TD_LCD_CAN_DEFER) && CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+#define DRAW_CORE 1
+#else
+#define DRAW_CORE 0
+#endif
 static void draw_loop(void *arg) {
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+#if DRAW_CORE
+        /* Two cores and a frame in RAM: draw without the bus while the other
+         * core measures; only sending the frame needs the lock. */
+        if (td_lcd_has_frame()) {
+            td_lcd_defer(true);
+            draw_frame();
+            td_lcd_defer(false);
+            lock_lcd();
+            td_lcd_idle();
+            unlock_lcd();
+            continue;
+        }
+#endif
         lock_lcd();
         draw_frame();
         unlock_lcd();
@@ -1718,15 +1737,20 @@ void board_ui_init(void) {
 #ifdef UI_TASK_CAPS
     xTaskCreatePinnedToCoreWithCaps(draw_loop, "draw", 4096, NULL, 2, &draw_task, 0, UI_TASK_CAPS);
 #else
-    xTaskCreatePinnedToCore(draw_loop, "draw", 4096, NULL, 2, &draw_task, 0);
+    xTaskCreatePinnedToCore(draw_loop, "draw", 4096, NULL, 2, &draw_task, DRAW_CORE);
 #endif
     render(splash_strip, 0, H);
     if (!ok) render(error_strip, 0, 10);
+    td_lcd_idle();
     td_lcd_backlight(80);
     const int64_t now = esp_timer_get_time();
     splash_until = now + 3000000;
     next_scan_at = now + 3000000; /* first (full) scan right after the splash */
     set_page(PAGE_WF);
+#ifdef TD_LCD_CAN_DEFER
+    /* A whole frame in RAM only with room to spare (Wi-Fi scans allocate). */
+    frame_ram = td_lcd_try_frame(24 * 1024);
+#endif
     /* Back from (or into) the BLE start: straight to the page asked for. */
     unsigned bp;
     const unsigned req = sdr_local_boot_request(&bp);
@@ -1751,11 +1775,11 @@ bool board_ui_command(const char *line) {
         int n = snprintf(buf, sizeof(buf),
             "TDSTAT page %d auto %d gain %d clip %.2f ref %.1f aps %d frame %u us rows %u scan %u us "
             "tune %u us caps %u cap %u us ana %u us render %u us keys %u us "
-            "touch32 %u/%u touch33 %u/%u heap %u internal %u drawn %u\n",
+            "touch32 %u/%u touch33 %u/%u heap %u internal %u drawn %u cores %d framebuf %d\n",
             page, auto_cycle, manual_gain, clip_rate, ref, ap_count, frame_us, rows, scan_us,
             tune_us, caps, cap_us, ana_us, render_us, keys_us,
             t9, b9, t8, b8, (unsigned)esp_get_free_heap_size(),
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), drawn);
+            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), drawn, CONFIG_FREERTOS_NUMBER_OF_CORES, frame_ram);
         burst_serial_send(buf, n);
         extern unsigned scan_phase_us[4];
         extern unsigned td_lcd_flush_us __attribute__((weak)), td_lcd_blit_us __attribute__((weak));

@@ -162,6 +162,8 @@ several of these transforms and only 1.25 MHz of noise per channel. It shows
 - **ESP32-S3 (JC3248):** gapless runs from a continuous ring buffer, the
   receiver listens about a third of the time (the rest draws the display).
 - **ESP32 (T-Display):** snapshots of 193 µs back to back, the same 16 µs grid.
+  Both cores work on it: core 0 takes the next snapshot while core 1
+  transforms the last one.
 
 1. Zeroing status with gain (`G34`) and age. 2. Big number: strongest excess
 in dB over the learned room. 3. Peak since zeroing. 4. Hits per second
@@ -408,6 +410,10 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
   readings.
 - Serial: the CH9102/CP210x bridge at 2 Mbaud.
 - No PSRAM; about 50 frames/s.
+- Runs on both cores: core 0 has Wi-Fi, the PHY and the measurements, core 1
+  draws (and transforms the detector's snapshots). With enough free RAM it also
+  keeps a whole frame (65 KB) and draws it while core 0 measures; `TDSTAT?`
+  ends with `cores 2 framebuf 0|1`.
 
 ### Guition JC3248W535 (ESP32-S3)
 
@@ -460,8 +466,7 @@ holds the radio, the display shows that and pauses.
   then) can stay below the room's Wi-Fi in the SDR pages. Use **BLE LISTE**: it
   decodes advertising and gets an RSSI per device.
 - **T-Display:** no BLE list (no room in the ESP32 build); the detector there
-  uses back-to-back snapshots instead of a gapless ring. This snapshot detector
-  is new and not yet verified on hardware as thoroughly as the S3 one.
+  uses back-to-back snapshots instead of a gapless ring.
 - **BLE LISTE** restarts the JC3248 when you open or leave it (see above).
 - The S3's gain table is not linear; the detector therefore ranges a fixed gain
   instead of using the AGC.
