@@ -125,3 +125,18 @@ this repository unless noted.
   (LTE watches), devices in airplane mode.
 - Development continues on a Mac: CLAUDE.md, HISTORY.md (this file) and
   BACKLOG.md added.
+
+## 2026-10-23 — Cellular and 5 GHz: what the ESP32 can and cannot see
+
+- Checked `docs/rx-controls.md`: software tuning 100–6000 MHz; experimental
+  lower band 1842–2209 MHz (5/6 LO conversion, verified at discrete tones
+  only); hardware checks historically 2100–2800 MHz.
+- LTE in Germany: phones indoors mostly transmit on B20 (832–862 MHz) and B3
+  (1710–1785 MHz), out of reach; only B1 (1920–1980) and B7/B38 (2500–2620)
+  uplinks would be. Decided not to pursue LTE this way.
+- 5G n78 (3400–3800 MHz) is outside every ESP32 front end's design; an
+  experiment (`TDPROBE`, crystal harmonic at 3600 MHz first, then a phone on
+  5G at short range) is planned in BACKLOG.md.
+- Recorded as ideas: ESP32-C5 for 5 GHz Wi-Fi; a broadband log power
+  detector (AD8317/AD8318) on the JC3248's ADC for cellular activity.
+- Owner continues on a Mac; the Windows dev PC session ends here.
