@@ -25,6 +25,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "esp_rom_sys.h"
 
 #define PIN_CS 45
 #define PIN_SCK 47
@@ -54,6 +55,12 @@ static uint16_t *frame;         /* logical TD_LCD_W x TD_LCD_H, PSRAM: drawn int
  * next one is drawn into the other. */
 static uint16_t *frames[2];
 static const uint16_t *sending;  /* the frame flush() reads */
+/* Background sending only: set while an RF capture waits for the bus. The
+ * frame then pauses between two chunks (the capture needs well under a
+ * millisecond) instead of making it wait for the rest of the frame. */
+static volatile bool *capture_waiting;
+static void (*send_lock)(void), (*send_unlock)(void);
+static bool in_send_task;
 static uint16_t *bounce[2];     /* internal DMA chunks */
 UI_BSS static uint16_t strip[TD_LCD_W * TD_STRIP_H];
 static bool dirty;
@@ -124,6 +131,14 @@ static void flush_from(const uint16_t *f) {
     bool open = false; /* a window from an earlier changed chunk runs on */
     unsigned sent = 0;
     for (int k = 0; k < CHUNKS; k++) {
+        if (in_send_task && *capture_waiting) {
+            /* Bus quiet (both buffers back), let the capture run, go on. */
+            for (int i = 0; i < 2; i++) xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
+            for (int i = 0; i < 2; i++) xSemaphoreGive(chunk_done);
+            send_unlock();
+            while (*capture_waiting) esp_rom_delay_us(20);
+            send_lock();
+        }
         xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
         uint16_t *b = bounce[cur];
         build_chunk(b, k * CHUNK_ROWS);
@@ -259,7 +274,6 @@ void td_lcd_idle(void) {
  * over by td_lcd_present(); sent_sem is free while no frame is on its way. */
 static TaskHandle_t send_task;
 static SemaphoreHandle_t sent_sem;
-static void (*send_lock)(void), (*send_unlock)(void);
 
 static void send_loop(void *arg) {
     (void)arg;
@@ -267,14 +281,17 @@ static void send_loop(void *arg) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         send_lock();
         const int64_t t0 = esp_timer_get_time();
+        in_send_task = true;
         flush_from(frames[frame == frames[0]]);
+        in_send_task = false;
         td_lcd_flush_us = (unsigned)(esp_timer_get_time() - t0);
         send_unlock();
         xSemaphoreGive(sent_sem);
     }
 }
 
-void td_lcd_async_start(void (*lock)(void), void (*unlock)(void), int core) {
+void td_lcd_async_start(void (*lock)(void), void (*unlock)(void), volatile bool *waiting, int core) {
+    capture_waiting = waiting;
     send_lock = lock;
     send_unlock = unlock;
     sent_sem = xSemaphoreCreateBinary();

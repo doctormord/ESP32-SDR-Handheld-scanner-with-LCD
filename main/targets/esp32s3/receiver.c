@@ -566,6 +566,12 @@ void sdr_local_reboot(unsigned mode, unsigned page) {
         nvs_commit(h);
         nvs_close(h);
     }
+#if CONFIG_SPIRAM_SPEED_120M
+    /* With PSRAM at 120 MHz the start after a CPU reset (esp_restart) hangs in
+     * its timing tuning; a whole-system reset starts as from power-on. */
+    esp_wifi_stop();
+    esp_rom_software_reset_system();
+#endif
     esp_restart();
 }
 static void boot_request_read(void) {

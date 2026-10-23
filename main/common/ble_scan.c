@@ -28,6 +28,13 @@ static SemaphoreHandle_t sync_sem, done_sem;
 static bool ready, failed;
 static uint8_t own_type;
 int ble_scan_err; /* diagnostics: 1 alloc, 2 port init (+ code << 8), 3 no sync, 4 disc (+ rc << 8) */
+int ble_scan_restarts; /* stack restarts after a stall */
+/* One scan that runs on (it used to be restarted every 300 ms, and after a
+ * minute or so of that the reports stopped for good); restarted with the
+ * whole stack only when nothing came in for STALL_US. */
+#define STALL_US 8000000
+static volatile bool scanning;
+static volatile int64_t last_report, scan_since;
 
 static void host_task(void *arg) {
     (void)arg;
@@ -84,6 +91,7 @@ static void note(const ble_addr_t *addr, int8_t rssi, const uint8_t *data, uint8
         devs[k].rssi_max = rssi;
         devs[k].first_us = now;
     }
+    last_report = now;
     sdr_local_ble_t *e = &devs[k];
     e->rssi = rssi;
     e->rssi_avg += BLE_AVG * ((float)rssi - e->rssi_avg);
@@ -110,32 +118,50 @@ static int on_gap(struct ble_gap_event *ev, void *arg) {
     else if (ev->type == BLE_GAP_EVENT_EXT_DISC)
         note(&ev->ext_disc.addr, ev->ext_disc.rssi, ev->ext_disc.data, ev->ext_disc.length_data);
 #endif
-    else if (ev->type == BLE_GAP_EVENT_DISC_COMPLETE) xSemaphoreGive(done_sem);
+    else if (ev->type == BLE_GAP_EVENT_DISC_COMPLETE) scanning = false;
     return 0;
 }
 
 int ble_scan_run(unsigned ms) {
     if (!start()) return -1;
+    const int64_t now = esp_timer_get_time();
+    if (scanning && now - scan_since > STALL_US && now - last_report > STALL_US) {
+        ble_scan_stop();
+        ble_scan_restarts++;
+        if (!start()) return -1;
+    }
+    if (scanning) {
+        vTaskDelay(pdMS_TO_TICKS(ms));
+        return dev_n;
+    }
     /* Active scan (scan responses carry most names), window = interval:
      * the controller listens all the time, 60 ms per advertising channel. */
     struct ble_gap_disc_params p = {
         .itvl = 96, .window = 96, .filter_policy = 0, .limited = 0, .passive = 0, .filter_duplicates = 0,
     };
-    xSemaphoreTake(done_sem, 0);
 #if CONFIG_BT_NIMBLE_EXT_ADV
-    /* Extended scan: legacy and extended reports, 1M PHY (duration in 10 ms). */
+    /* Extended scan: legacy and extended reports, 1M PHY, no end. */
     (void)p;
     const struct ble_gap_ext_disc_params ep = {.itvl = 96, .window = 96, .passive = 0};
-    const int rc = ble_gap_ext_disc(own_type, (uint16_t)(ms / 10), 0, 0, 0, 0, &ep, NULL, on_gap, NULL);
+    const int rc = ble_gap_ext_disc(own_type, 0, 0, 0, 0, 0, &ep, NULL, on_gap, NULL);
 #else
-    const int rc = ble_gap_disc(own_type, (int32_t)ms, &p, on_gap, NULL);
+    const int rc = ble_gap_disc(own_type, BLE_HS_FOREVER, &p, on_gap, NULL);
 #endif
-    if (rc) {ble_scan_err = 4 | rc << 8; return -1;}
-    if (xSemaphoreTake(done_sem, pdMS_TO_TICKS(ms + 500)) != pdTRUE) ble_gap_disc_cancel();
+    if (rc) {
+        ble_scan_err = 4 | rc << 8;
+        ble_scan_stop(); /* start over with the next call */
+        ble_scan_restarts++;
+        vTaskDelay(pdMS_TO_TICKS(ms));
+        return -1;
+    }
+    scanning = true;
+    scan_since = last_report = now;
+    vTaskDelay(pdMS_TO_TICKS(ms));
     return dev_n;
 }
 
 void ble_scan_stop(void) {
+    scanning = false;
     if (!ready) {failed = false; return;}
     ble_gap_disc_cancel();
     nimble_port_stop();
