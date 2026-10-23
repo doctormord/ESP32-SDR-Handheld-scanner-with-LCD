@@ -5,21 +5,22 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- **FOCUS CHANNEL (branch `focus-channel`): test on both boards.**
-  1. `TDRATE 0`, `TDRATE 1`, `TDRATE 6`: the strongest bin must be at
-     −2.000 MHz (±1 bin: 0.31 / 0.16 / 0.06 MHz). If not, the rate mapping
-     (`sdr_local_capture` divider 0/1/6) or the analog filter setting
-     (`sdr_local_set_bandwidth`, 20 / 15 MHz) is wrong.
-  2. Sniffer page 4 (`TDSNIFF 1`, `TDSNPAGE 3`), targets via `TDFOCUS n`
-     (5 = Wi-Fi 6, 14 = BLE 38, 20 = Zigbee 15): compare `listen ms/s` with
-     the survey (JC ~9 ms/s, T-Display ~4.6 ms/s); expect ~2× (Wi-Fi) and
-     ~5× (BLE/Zigbee) minus overhead.
-  3. Check on the display: airtime number, level, phosphor, waterfall,
-     target marks, axis labels; hold keys to step targets; T-Display layout
-     (135 px high) fits.
-  4. Put measured numbers into README (FOCUS CHANNEL section), merge to
-     `main`, rebuild `firmware/*.bin`, release v1.2.0.
-- Mockup for FOCUS CHANNEL in `tools/readme_images.py` + README image.
+- **FOCUS (branch `focus-channel`): three pages.** Rates and listening time
+  are measured on both boards (HISTORY 2026-10-23). Open:
+  1. Wi-Fi gap in the middle of the span: measure the floor across the span
+     with the LO off the channel centre (20 MHz analog filter rolloff); if
+     flat enough, tune Wi-Fi ~6 MHz off like BLE/Zigbee.
+  2. Split FOCUS CHANNEL into FOCUS WIFI (1–13) / FOCUS BLE (37–39) /
+     FOCUS ZIGBEE (11–26) at its place in the sniffer pages; channel per page
+     in NVS (first start: Wi-Fi = strongest network's channel, BLE 38,
+     Zigbee 15); a held key steps once per second; `TDFOCUS n` keeps its
+     numbering.
+  3. Check both boards, README (FOCUS section with the measured numbers),
+     merge to `main`, rebuild `firmware/*.bin`, release v1.2.0.
+- JC3248: carrier at 2448.0 MHz (51 × 48 MHz, USB?) — confirm the source
+  (e.g. powered from a USB charger, serial off) and blank it like the
+  crystal harmonics if it matters.
+- Mockup for the FOCUS pages in `tools/readme_images.py` + README image.
 - Helper scripts used during development lived outside the repo (Windows
   temp): consider adding a `tools/serial_tests.py` with the measurement
   routines (fps/captures, `TDSPINOISE`, `TDRATE`, `TDFOCUS?`, sniffer rates).

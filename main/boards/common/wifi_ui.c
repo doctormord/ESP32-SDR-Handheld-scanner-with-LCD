@@ -2914,23 +2914,28 @@ bool board_ui_command(const char *line) {
         burst_serial_send("OK\n", 3);
         return true;
     }
-    /* TDRATE d: checks a sample rate (d = 0 / 1 / 6: 80 / 40 / 16 MS/s)
+    /* TDRATE d [lo]: checks a sample rate (d = 0 / 1 / 6: 80 / 40 / 16 MS/s)
      * against the 40 MHz crystal's harmonic at 2440 MHz: at LO 2442 its
-     * strongest bin must sit 2.0 MHz below the LO if the rate is right. */
-    if (sscanf(line, "TDRATE %d", &p) == 1 && (p == 0 || p == 1 || p == 6)) {
+     * strongest bin must sit 2.0 MHz below the LO if the rate is right.
+     * A second LO tells a real carrier from a mirrored one: a real one moves
+     * by minus the LO step. */
+    int rate_lo = 2442;
+    if (sscanf(line, "TDRATE %d %d", &p, &rate_lo) >= 1 && (p == 0 || p == 1 || p == 6) &&
+        rate_lo >= 2300 && rate_lo <= 2600) {
         const unsigned msps = p == 0 ? 80 : p == 1 ? 40 : 16;
         lock_lcd();
         td_lcd_idle();
         sdr_local_set_bandwidth(p == 0 ? BW_80 : p == 1 ? 20 : 15);
         sdr_local_set_gain(GAIN_REF);
-        sdr_local_tune(2442);
+        sdr_local_tune(rate_lo);
         float over = 0, off = 0;
         const uint32_t *iq = sdr_local_capture(CAP_N, (unsigned)p);
         if (iq) off = zb_strongest_offset(iq, CAP_N, msps, &over);
         unlock_lcd();
-        char out[120];
-        const int m = snprintf(out, sizeof(out), "TDRATE %u MS/s strongest %+.3f MHz (+%.1f dB over median), expected -2.000 %s\n",
-                               msps, off, over, iq ? "" : "(capture failed)");
+        char out[140];
+        const int m = snprintf(out, sizeof(out), "TDRATE %u MS/s LO %d strongest %+.3f MHz (+%.1f dB over median), expected %+.3f %s\n",
+                               msps, rate_lo, off, over, (float)(40 * ((rate_lo + 20) / 40) - rate_lo),
+                               iq ? "" : "(capture failed)");
         burst_serial_send(out, m);
         return true;
     }
