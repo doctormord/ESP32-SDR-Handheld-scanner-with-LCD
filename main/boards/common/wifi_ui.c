@@ -840,10 +840,9 @@ static void wf_strip(uint16_t *s, int y0, int h) {
     for (int y = y0 > WF_Y ? y0 : WF_Y; y < y0 + h && y < AXIS_Y; y++) {
         const uint8_t *src = wf + ((fv_wf_head - (y - WF_Y) + WF_ROWS) % WF_ROWS) * UW;
         uint16_t *row = s + (y - y0) * W;
-        const bool dotted = (y / UI_SCALE & 3) == 0;
         for (int x = 0; x < UW; x++) {
             const uint8_t v = src[x];
-            row[x] = v ? lut[v] : dotted && col_mark[x] ? (col_mark[x] == MARK_BLE ? RGB(60, 0, 60) : RGB(0, 50, 90)) : C_BLACK;
+            row[x] = v ? lut[v] : C_BLACK;
         }
     }
     /* Channel numbers under the waterfall, fixed: 1, 6, 11 cyan, the rest grey
@@ -1290,6 +1289,8 @@ static float sn_margin;
 static bool sn_based;
 static int64_t sn_based_at;            /* when the zeroing finished */
 static float sn_fast, sn_slow, sn_best; /* BEARING: row peak, quick and slow average, best */
+#define SN_FAST_S 0.6f          /* BEARING: number and bar */
+#define SN_SLOW_S 3.0f          /* BEARING: what the trend arrow compares with */
 static int64_t sn_phase_until;
 static unsigned sn_v_lit, sn_v_px, sn_tries;
 static float sn_meter, sn_hist_max, sn_activity;
@@ -1468,8 +1469,13 @@ static void sn_push_row(int64_t now) {
         }
     }
     if (sn_state != SN_IDLE) peak = 0;
-    sn_fast += 0.3f * (peak - sn_fast);
-    sn_slow += 0.04f * (peak - sn_slow);
+    /* BEARING's number and bar (SN_FAST_S) and its trend reference
+     * (SN_SLOW_S), by time: per row they sped up with the frame rate. */
+    static int64_t avg_at;
+    const float dt = avg_at ? (now - avg_at) * 1e-6f : 0.04f;
+    avg_at = now;
+    sn_fast += (1 - expf(-dt / SN_FAST_S)) * (peak - sn_fast);
+    sn_slow += (1 - expf(-dt / SN_SLOW_S)) * (peak - sn_slow);
     if (sn_fast > sn_best) sn_best = sn_fast;
     /* Meter: rises at once, falls 25 dB/s. */
     const float fall = sn_meter - 25.0f * ROW_US / 1e6f;
@@ -1739,9 +1745,11 @@ static void det_step(int64_t now) {
             det_room = -200;
             for (int k = 0; k < DET_BINS; k++) if (det_room_bin[k] > det_room) det_room = det_room_bin[k];
         }
-        /* One waterfall row per run: excess bright, the room faint. */
+        /* One waterfall row per two runs (the stronger of both), so the
+         * picture holds twice the time: excess bright, the room faint. */
+        static bool det_second;
         if (wf) {
-            det_wf_head = (det_wf_head + 1) % WF_ROWS;
+            if (!det_second) det_wf_head = (det_wf_head + 1) % WF_ROWS;
             uint8_t *row = wf + det_wf_head * UW;
             for (int x = 0; x < UW; x++) {
                 const int k = x * DET_BINS / UW;
@@ -1753,8 +1761,10 @@ static void det_step(int64_t now) {
                     if (v < 0) v = 0;
                     if (v > SN_BG_MAX) v = SN_BG_MAX;
                 }
-                row[x] = (uint8_t)(v > 255 ? 255 : v);
+                const uint8_t u = (uint8_t)(v > 255 ? 255 : v);
+                row[x] = !det_second || u > row[x] ? u : row[x];
             }
+            det_second = !det_second;
         }
     }
     for (int i = 0; i < DET_SLOTS; i++) {
