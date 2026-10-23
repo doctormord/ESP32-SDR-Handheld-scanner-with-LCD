@@ -1,6 +1,5 @@
 /* LILYGO TTGO T-Display (ESP32-D0WDQ6, 4 MB flash): on-device Wi-Fi survey on
- * the 1.14 inch ST7789 (135x240, used landscape), two buttons and two touch
- * pins. Pin map from LILYGO's TTGO-T-Display repository (TFT_eSPI Setup25). */
+ * the 1.14 inch ST7789 (135x240, used landscape) and two buttons. Pin map from LILYGO's TTGO-T-Display repository (TFT_eSPI Setup25). */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -39,13 +38,11 @@ bool td_lcd_try_frame(size_t keep);
 void td_lcd_defer(bool on);
 #define TD_LCD_CAN_DEFER 1
 
-/* Inputs. NEXT: button GPIO0 (left) or a finger on GPIO32 (touch T9).
- * SCAN: button GPIO35 (right) or a finger on GPIO33 (touch T8). Touch needs
- * nothing soldered: the bare header pin, its pad or a jumper wire on it. */
+/* Inputs. NEXT: button GPIO0 (left). SCAN: button GPIO35 (right). */
 enum { TD_NEXT = 1u << 0, TD_SCAN = 1u << 1 };
 void td_io_init(void);
 unsigned td_keys(void); /* held now */
-/* Last touch readings and baselines, for diagnostics (lower = touched). */
-void td_touch_raw(unsigned *t9, unsigned *t8, unsigned *base9, unsigned *base8);
+/* No touch on this board: zeros (kept for TDSTAT?, shared with the JC3248). */
+void td_touch_raw(unsigned *a, unsigned *b, unsigned *c, unsigned *d);
 /* Output pins the board drivers own (reserved from GPIO discovery). */
 uint64_t td_board_pins(void);

@@ -30,6 +30,5 @@ CONFIG_ESP_SDR_PAGE_SECONDS=0
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 # Legacy touch driver (driver/touch_pad.h): simple and enough for two pads.
-CONFIG_TOUCH_SUPPRESS_DEPRECATE_WARN=y
 # Display SPI at 80 MHz (VSPI IO_MUX pins); 40 is the safe fallback.
 CONFIG_ESP_SDR_TDISPLAY_SPI_MHZ=80

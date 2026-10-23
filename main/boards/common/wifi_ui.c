@@ -94,6 +94,12 @@
 #define SCAN_PARTS 3
 #define HOLD_US 60000000      /* a tap holds the page this long */
 #define LONG_US 1000000
+#define RELEASE_US 120000     /* a key counts as let go after this long without it */
+#define HOLD_SHOW_US 150000   /* the hold bar shows once a key is held this long */
+/* The key being held (or -1), since when, and how long its hold takes: drawn
+ * as a bar in the title row (hold_bar), so one can see when to let go. */
+static int hold_key = -1;
+static int64_t hold_since, hold_span;
 /* Automatic cycling, when on: the configured period, 12 s if that is 0. */
 #define PAGE_US ((CONFIG_ESP_SDR_PAGE_SECONDS ? CONFIG_ESP_SDR_PAGE_SECONDS : 12) * 1000000LL)
 
@@ -658,6 +664,20 @@ static int header_row(uint16_t *s, int y0, int h, const char *title, const char 
     if (b[0]) text(s, y0, h, x, P(1), b, sc, 1);
     const int end = x + text_w(b, 1);
     if (room) *room = tx - P(5) - end;
+    /* Hold bar along the foot of the title row: fills green while a key is
+     * held, towards a red goal at the right end; red all over once the hold
+     * has done its job (let go now). A two-step hold (right key in survey:
+     * 1 s scan, 2 s periodic scanning) has a white mark half way. */
+    const int64_t held = hold_key >= 0 ? esp_timer_get_time() - hold_since : 0;
+    if (held > HOLD_SHOW_US && hold_span > 0) {
+        const int by = HDR_H - P(2), bh = P(2), gw = UW / 16;
+        int fill = (int)(held * UW / hold_span);
+        if (fill > UW) fill = UW;
+        rect(s, y0, h, 0, by, UW, bh, C_COL);
+        rect(s, y0, h, UW - gw, by, gw, bh, RGB(120, 20, 20));
+        rect(s, y0, h, 0, by, fill, bh, held >= hold_span ? C_RED : C_GREEN);
+        if (hold_span > LONG_US) rect(s, y0, h, (int)(LONG_US * UW / hold_span), by - P(1), P(1), bh + P(1), C_WHITE);
+    }
     return end;
 }
 
@@ -669,7 +689,7 @@ static void draw_header(uint16_t *s, int y0, int h) {
     if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
     else if (scanning) snprintf(t, sizeof(t), "scan..");
     else if (page == PAGE_ZB) t[0] = 0;
-    else snprintf(t, sizeof(t), scan_auto ? "%d Netze  scan auto" : "%d Netze", ap_count < 0 ? 0 : ap_count);
+    else snprintf(t, sizeof(t), scan_auto ? "%d Netze scan auto" : "%d Netze scan manual", ap_count < 0 ? 0 : ap_count);
     const bool clipping = !agc_mode && clip_rate > 0.3f;
     char pg[24];
     snprintf(pg, sizeof(pg), "%d/%d", page + 1, PAGES);
@@ -1923,7 +1943,9 @@ static void set_page(int p) {
     const int was = page;
     page = (p + PAGES) % PAGES;
     page_at = esp_timer_get_time();
-    if (page == PAGE_NETS && was != PAGE_NETS) { /* arriving at the list: make it fresh */
+    /* Arriving at a page that shows networks: one full scan, so the list and
+     * the count are fresh (periodic scanning keeps them so anyway). */
+    if (page != was && !scan_auto && (page == PAGE_NETS || page == PAGE_WF || page == PAGE_CHAN)) {
         full_scan_pending = true;
         next_scan_at = page_at;
     }
@@ -1960,7 +1982,21 @@ static void scan(void) {
  * (survey). Right: tap switches survey <-> sniffer; hold: full network scan
  * (survey) or zero the background (sniffer). */
 static void handle_keys(int64_t now) {
-    unsigned k = td_keys();
+    /* Touch can drop out for a moment during a long touch; a gap shorter
+     * than RELEASE_US is not a release (it used to count as a tap, and a
+     * tap on the right switches to the sniffer). */
+    static unsigned stable;
+    static int64_t gone_at[2];
+    const unsigned raw = td_keys();
+    for (int i = 0; i < 2; i++) {
+        const unsigned bit = 1u << i;
+        if (raw & bit) {stable |= bit; gone_at[i] = 0;}
+        else if (stable & bit) {
+            if (!gone_at[i]) gone_at[i] = now;
+            else if (now - gone_at[i] >= RELEASE_US) stable &= ~bit;
+        }
+    }
+    unsigned k = stable;
     for (int i = 0; i < 2; i++) {
         const unsigned bit = 1u << i;
         if ((k & bit) && !(held_prev & bit)) {
@@ -2010,6 +2046,12 @@ static void handle_keys(int64_t now) {
         }
     }
     held_prev = k;
+    /* What the hold bar shows. */
+    hold_key = k & 2 ? 1 : k & 1 ? 0 : -1;
+    if (hold_key >= 0) {
+        hold_since = pressed_at[hold_key];
+        hold_span = hold_key == 1 && !sniffer && page != PAGE_COV ? 2 * LONG_US : LONG_US;
+    }
 }
 
 
