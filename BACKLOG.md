@@ -5,9 +5,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- **FOCUS pages (branch `focus-channel`): release.** Three pages, tested on
-  both boards (HISTORY 2026-10-23). Open: merge to `main`, rebuild
-  `firmware/*.bin`, release v1.2.0.
 - JC3248: carrier at 2448.0 MHz (51 × 48 MHz, USB?) — confirm the source
   (e.g. powered from a USB charger, serial off) and blank it like the
   crystal harmonics if it matters.
