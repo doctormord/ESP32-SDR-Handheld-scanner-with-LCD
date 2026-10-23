@@ -1868,8 +1868,13 @@ static int64_t pressed_at[2];
 static bool long_done[2];
 
 static void set_page(int p) {
+    const int was = page;
     page = (p + PAGES) % PAGES;
     page_at = esp_timer_get_time();
+    if (page == PAGE_NETS && was != PAGE_NETS) { /* arriving at the list: make it fresh */
+        full_scan_pending = true;
+        next_scan_at = page_at;
+    }
     net_first = 0;
     net_flip_at = page_at + 4000000;
 }
@@ -1949,9 +1954,71 @@ static void handle_keys(int64_t now) {
     held_prev = k;
 }
 
+#if CONFIG_ESP_SDR_PANEL_WASH
+#include "esp_random.h"
+/* Panel wash (CONFIG_ESP_SDR_PANEL_WASH): a maintenance image instead of the
+ * scanner. Full-screen colours one second each, then a one-pixel checkerboard
+ * inverted every frame (each pixel swings between white and black as fast as
+ * the panel refreshes), then random colours per pixel; in a loop, backlight
+ * at full. It can fade image retention in the liquid crystal; a loose flex or
+ * a dead column driver stays as it is. Reset or power off to end it. */
+static uint16_t wash_c;
+static unsigned wash_frame;
+static void wash_fill(uint16_t *s, int y0, int h) { (void)y0; sv_fill(s, W, h, wash_c); }
+static void wash_checker(uint16_t *s, int y0, int h) {
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < W; x++) s[y * W + x] = ((x + y + y0 + wash_frame) & 1) ? 0xffff : 0x0000;
+}
+static void wash_noise(uint16_t *s, int y0, int h) {
+    (void)y0;
+    for (int i = 0; i < W * h; i += 2) {
+        const uint32_t r = esp_random();
+        s[i] = (uint16_t)r;
+        if (i + 1 < W * h) s[i + 1] = (uint16_t)(r >> 16);
+    }
+}
+static void wash_title(uint16_t *s, int y0, int h) {
+    sv_fill(s, W, h, C_BLACK);
+    text(s, y0, h, P(6), P(10), "PANEL WASH", C_YELLOW, 1);
+    text(s, y0, h, P(6), P(30), "Farben, Schachbrett, Rauschen", C_TEXT, 1);
+    text(s, y0, h, P(6), P(44), "in Schleife. Ende: Reset/aus.", C_TEXT, 1);
+    text(s, y0, h, P(6), P(64), "Hilft gegen eingebrannte Bilder,", C_DIM, 1);
+    text(s, y0, h, P(6), P(78), "nicht gegen Kontakt-/Treiberfehler.", C_DIM, 1);
+}
+static void wash_frame_out(strip_fn fn) {
+    render(fn, 0, H);
+    td_lcd_idle();
+    wash_frame++;
+    vTaskDelay(1);
+}
+static void panel_wash(void) {
+    td_lcd_backlight(100);
+    wash_frame_out(wash_title);
+    vTaskDelay(pdMS_TO_TICKS(4000));
+    static const uint8_t cols[][3] = {
+        {255, 255, 255}, {0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255},
+        {0, 255, 255}, {255, 0, 255}, {255, 255, 0}, {128, 128, 128},
+    };
+    for (;;) {
+        for (unsigned i = 0; i < sizeof(cols) / sizeof(cols[0]); i++) {
+            wash_c = RGB(cols[i][0], cols[i][1], cols[i][2]);
+            const int64_t until = esp_timer_get_time() + 1000000;
+            while (esp_timer_get_time() < until) wash_frame_out(wash_fill);
+        }
+        int64_t until = esp_timer_get_time() + 20000000;
+        while (esp_timer_get_time() < until) wash_frame_out(wash_checker);
+        until = esp_timer_get_time() + 20000000;
+        while (esp_timer_get_time() < until) wash_frame_out(wash_noise);
+    }
+}
+#endif
+
 void board_ui_init(void) {
     td_lcd_init();
     td_io_init();
+#if CONFIG_ESP_SDR_PANEL_WASH
+    panel_wash(); /* does not return */
+#endif
     wf = calloc(WF_ROWS, UW);
     glow = calloc(GLOW_H, UW);
     bool ok = wf && glow && zb_init();
@@ -2019,8 +2086,10 @@ bool board_ui_command(const char *line) {
         burst_serial_send(buf, n);
         extern unsigned scan_phase_us[4];
         extern unsigned td_lcd_flush_us __attribute__((weak)), td_lcd_blit_us __attribute__((weak));
+        extern unsigned td_lcd_chunks_sent __attribute__((weak));
         if (&td_lcd_flush_us) {
-            n = snprintf(buf, sizeof(buf), "lcd flush %u us blit-sum %u us\n", td_lcd_flush_us, td_lcd_blit_us);
+            n = snprintf(buf, sizeof(buf), "lcd flush %u us blit-sum %u us chunks %u\n", td_lcd_flush_us, td_lcd_blit_us,
+                         &td_lcd_chunks_sent ? td_lcd_chunks_sent : 0);
             td_lcd_blit_us = 0;
             burst_serial_send(buf, n);
         }
@@ -2176,6 +2245,20 @@ bool board_ui_command(const char *line) {
         }
         return true;
     }
+#ifdef TD_LCD_WINDOW_TEST
+    /* TDLCDWIN: red 100 x 70 block at panel column 110, row 190 through the
+     * window commands, held 6 s (drawing paused): in the middle = the panel
+     * honours windows (partial updates possible); at the top left = it does not. */
+    int wx = 110, wy = 190, ww = 100, wh = 70;
+    if (!strncmp(line, "TDLCDWIN", 8) && (!line[8] || sscanf(line + 8, "%d %d %d %d", &wx, &wy, &ww, &wh) == 4)) {
+        burst_serial_send("OK\n", 3);
+        lock_lcd();
+        td_lcd_test_window(wx, wy, ww, wh, RGB(255, 0, 0));
+        vTaskDelay(pdMS_TO_TICKS(6000));
+        unlock_lcd();
+        return true;
+    }
+#endif
     if (!strcmp(line, "TDCOV?")) {
         int n = snprintf(buf, sizeof(buf), "TDCOV on %d ssid '%s' ch %d rssi %.1f min %d max %d fps %u live %d\n",
                          cov_on, cov_ssid, cov_ch, cov_val, cov_min, cov_max, cov_fps,
@@ -2256,7 +2339,11 @@ bool board_ui_step(bool host_active) {
     /* PEGEL keeps the radio on its network's channel; anything else frees it. */
     const bool cov_page = !sniffer && page == PAGE_COV;
     if (!cov_page && cov_on) cov_stop();
-    if (!sniffer && !cov_page && next_scan_at && now >= next_scan_at) scan();
+    /* Network scans stop the display for a moment, and only NETZE (names,
+     * counts) needs them: the waterfall and channel pages, best channel
+     * included, run on the SDR measurement. Elsewhere only on request. */
+    if (!sniffer && !cov_page && next_scan_at && now >= next_scan_at && (page == PAGE_NETS || full_scan_pending))
+        scan();
 
     /* One capture per step, whatever is shown. */
     const int64_t t0 = esp_timer_get_time();

@@ -36,6 +36,9 @@ void td_lcd_blit(int x, int y, int w, int h, uint16_t *strip);
  * Call before every RF capture: SPI traffic during a capture shows up as
  * spurs. */
 void td_lcd_idle(void);
+/* Diagnostics: a block of colour c through the panel's window commands. */
+void td_lcd_test_window(int x, int y, int w, int h, uint16_t c);
+#define TD_LCD_WINDOW_TEST 1
 
 /* Inputs: left half of the screen or BOOT = NEXT, right half = SCAN. */
 enum { TD_NEXT = 1u << 0, TD_SCAN = 1u << 1 };
