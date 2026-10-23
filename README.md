@@ -74,7 +74,7 @@ band, and analyses them on the chip:
   between the measurements (every 9 s by default), only while NETZE is shown
   (and once at start, or on request): a scan stops the picture for a moment, and
   the other pages, best channel included, run on the SDR measurement alone.
-  When you carry the board around, **hold the right button for 2 s** to switch
+  When you carry the board around, **hold the next-page key for 2 s** to switch
   on periodic scanning: every second one third of the band on WASSERFALL,
   NETZE and KANAELE WIFI (header: `scan auto`), so the network counts follow
   you. The picture keeps being drawn during a scan (on the second core); only
@@ -93,7 +93,7 @@ band, and analyses them on the chip:
 
 ## Survey mode: networks and channel load
 
-The board starts here. **Left button** cycles the five pages: WASSERFALL VOLL →
+The board starts here. The **next-page key** cycles the five pages: WASSERFALL VOLL →
 NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
 
 ### WASSERFALL VOLL (full waterfall)
@@ -105,7 +105,10 @@ NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
    changes is drawn below it.
 2. **Phosphor spectrum:** every snapshot adds a little light where its trace
    lies, and everything fades within about a second. Levels that keep coming
-   back glow hot, rare peaks stay faint.
+   back glow hot, rare peaks stay faint. The picture is softened (levels
+   interpolated between FFT bins, a 3 x 3 blur, eased from frame to frame), and
+   every colour theme runs out into black at its faint end, so traces fade
+   away instead of stopping at the theme's darkest colour.
 3. **Occupancy waterfall:** newest row on top, about 7 s of history. Each row
    shows how often each frequency was busy; a Wi-Fi network appears as a 20 MHz
    wide band. Each column is shown against its own quiet level, so constant
@@ -131,8 +134,8 @@ the list pages every 4 s.
 1. Number of networks per channel. 2. Airtime bar (full = 100 %). 3. White
 tick: peak airtime of the last seconds. 4. The quietest of 1/6/11 has a green
 column. 5. Airtime in %. 6. Channel number (fixed, at the bottom). The
-network counts come from the last scan; with periodic scanning (hold right
-2 s) every channel is renewed every 3 s.
+network counts come from the last scan; with periodic scanning (hold the
+next-page key 2 s) every channel is renewed every 3 s.
 
 **Airtime colours:** green up to ~15 %, yellow around 40 %, red from 75 %.
 Neighbouring channels overlap, so a busy network on channel 6 also colours
@@ -162,8 +165,9 @@ network's channel (calibrated there) and takes the RSSI of every frame the
 access point sends: ten beacons a second, plus all of its traffic. No scans and
 no SDR measurements run while this page is open.
 
-The page starts with the strongest network of the NETZE list. **Hold left /
-right** to step to the next / previous network; no fine tapping needed.
+The page starts with the strongest network of the NETZE list. **Hold the mode
+key / the next-page key** to step to the next / previous network; no fine
+tapping needed.
 
 1. Network name, channel and MAC. 2. Signal strength in dBm (green strong,
 yellow medium, orange weak; `--` and `kein Signal` after 1 s without a frame).
@@ -177,7 +181,7 @@ hold to change the network.
 
 ## Sniffer mode: find active devices
 
-**Right button (short)** switches between survey and sniffer mode. The sniffer
+The **mode key (short)** switches between survey and sniffer mode. The sniffer
 is a field-strength detector: a phone or headphones in a bag 30–50 cm away
 arrive 15–30 dB stronger than routers and devices across the room, however busy
 the room is. Typical signatures:
@@ -187,7 +191,7 @@ the room is. Typical signatures:
 - **BLE (watch, earbuds, trackers):** short dots on 37/38/39.
 - **Phone:** 20 MHz wide Wi-Fi bands plus BLE.
 
-**Left button (short)** cycles the sniffer pages:
+The **next-page key (short)** cycles the sniffer pages:
 
 ### SUCHER BREITBAND (wideband finder)
 
@@ -244,7 +248,7 @@ name was first seen within the last 10 s. 5. MAC address as phone apps show
 it; `*` = fixed (public) address. 6. Seconds since last heard (devices unseen
 for 15 s turn grey and move down, after 2 min they go).
 
-The nearest device is on top. **Right button long** clears the list.
+The nearest device is on top. **Next-page key long** clears the list.
 
 The BT controller and the SDR receiver do not fit into the ESP32-S3's internal
 RAM together, so **opening and leaving this page restarts the board** (about
@@ -253,7 +257,7 @@ MAC address every few minutes and then appear as a new entry.
 
 ### Zeroing (calibrates itself to the room)
 
-**Right button long** zeroes the current sniffer page. Keep the board still for
+**Next-page key long** zeroes the current sniffer page. Keep the board still for
 6–15 s:
 
 1. **`stelle G..`** (detector only): sets a fixed gain so the room's strongest
@@ -266,27 +270,31 @@ MAC address every few minutes and then appear as a new entry.
 
 The reference then stays fixed (otherwise a device you stand next to would be
 learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
-**Left button long** removes the zeroing (`ohne Basis`).
+**Mode key long** removes the zeroing (`ohne Basis`).
 
 ---
 
 ## Controls
 
-| Button | short | long (1 s) |
-|---|---|---|
-| **Left** | next page | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
-| **Right** | survey ↔ sniffer | survey: full network scan now; kept held to 2 s: periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
+There are two keys:
 
-- **T-Display:** left = GPIO0 button, right = GPIO35 button.
-- **JC3248:** touching the **right** half of the screen is the left button
-  (next page), the **left** half the right button (survey ↔ sniffer, scan,
-  zero). The BOOT button works as the left button. A touch that drops out for less than 0.12 s
-  during a long hold still counts as held.
-- **Hold bar:** while a button is held, a bar along the foot of the title row
-  fills green towards a red goal at the right; once it is all red the hold has
-  done its job and you can let go. For the right button in survey mode it runs
-  over 2 s with a white mark at 1 s (scan) and the goal at 2 s (periodic
-  scanning on/off).
+| Key | T-Display | JC3248 |
+|---|---|---|
+| **Next-page key** | left button (GPIO0) | right half of the screen, or the BOOT button |
+| **Mode key** | right button (GPIO35) | left half of the screen |
+
+| Key | short | long (1 s) |
+|---|---|---|
+| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WASSERFALL / KANAELE WIFI: periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
+| **Mode** | survey ↔ sniffer | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
+
+- A touch that drops out for less than 0.12 s during a long hold still counts
+  as held.
+- **Hold bar:** while a key is held, a two-pixel bar along the top of the
+  title row fills green towards a red goal at the right; once it is all red the
+  hold has done its job and you can let go. Where the next-page key holds in
+  two steps it runs over 2 s, with a white mark at 1 s (scan) and the goal at
+  2 s (periodic scanning on/off).
 
 ### On-screen words
 
@@ -306,9 +314,10 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 
 ## Colour themes
 
-**Left button long** in survey mode cycles Klassisch (classic), Inferno,
+**Mode key long** in survey mode cycles Klassisch (classic), Inferno,
 Viridis, Turbo, Phosphor (green), Nacht (night, red) and Mono. The theme
-applies to all waterfalls and the spectrum. Its name shows in the header for
+applies to all waterfalls and the spectrum; Nacht turns the whole picture red
+(text, bars and header too), for dark-adapted eyes. Its name shows in the header for
 2 s; then it is saved in NVS and restored at the next start.
 
 <p align="center"><img src="images/themes.png" width="60%" alt="The seven colour themes"></p>
@@ -465,8 +474,11 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
 - Display AXS15231B, 320×480 portrait, on QSPI (SPI2): CS 45, SCK 47,
   D0–D3 = 21/48/40/39, backlight 1. It runs at 40 MHz because the pins go
   through the GPIO matrix; 80 MHz showed scan lines.
-- Runs on both cores: core 0 measures, core 1 draws the next picture into the
-  PSRAM frame meanwhile; only sending it waits for a capture. (ESP-SDR's
+- Runs on both cores: core 0 measures, core 1 draws the next picture into one
+  of two PSRAM frames while the other one is being sent (a task of its own,
+  which only waits for a capture); about 22 frames/s on WASSERFALL. The data
+  cache uses 64-byte lines (`sdkconfig.defaults.jc3248`): drawing into PSRAM
+  and reading it back across rows for the panel misses half as often. (ESP-SDR's
   bare-metal core-1 helper for SPEC streaming to a host is off then; SPEC
   streaming runs on one core.)
 - Partial updates: the frame goes out in 40 chunks of 12 panel rows (each a

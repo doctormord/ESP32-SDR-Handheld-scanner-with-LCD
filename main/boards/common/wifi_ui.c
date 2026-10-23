@@ -293,6 +293,7 @@ static const theme_t themes[] = {
 static int theme;
 static int64_t theme_note_until, theme_save_at;
 
+#define LUT_RAMP 32
 static void theme_lut(int t) {
     const theme_t *th = &themes[t];
     lut[0] = C_BLACK;
@@ -301,9 +302,13 @@ static void theme_lut(int t) {
         int a = (int)pos;
         if (a > th->n - 2) a = th->n - 2;
         const float f = pos - a;
-        lut[i] = sv_rgb((unsigned)(th->stop[a][0] + (th->stop[a + 1][0] - th->stop[a][0]) * f),
-                        (unsigned)(th->stop[a][1] + (th->stop[a + 1][1] - th->stop[a][1]) * f),
-                        (unsigned)(th->stop[a][2] + (th->stop[a + 1][2] - th->stop[a][2]) * f));
+        /* The lowest LUT_RAMP steps come up from black: whatever fades
+         * (phosphor, waterfall afterglow) runs out smoothly instead of
+         * dropping from the first colour (Viridis' purple) to black. */
+        const float k = i < LUT_RAMP ? (float)i / LUT_RAMP : 1;
+        lut[i] = sv_rgb((unsigned)(k * (th->stop[a][0] + (th->stop[a + 1][0] - th->stop[a][0]) * f)),
+                        (unsigned)(k * (th->stop[a][1] + (th->stop[a + 1][1] - th->stop[a][1]) * f)),
+                        (unsigned)(k * (th->stop[a][2] + (th->stop[a + 1][2] - th->stop[a][2]) * f)));
     }
 }
 
@@ -369,16 +374,22 @@ UI_BSS static float new_row[UW];
 /* Brightness added per capture follows the capture rate: a signal that is
  * always there settles at GLOW_STEADY (of 255; above 255 it saturates) on
  * any board, however many captures a second it manages. */
-#define GLOW_STEADY 380.0f
-#define GLOW_TAU_S 0.8f       /* fade */
+#define GLOW_STEADY 300.0f
+#define GLOW_TAU_S 0.6f       /* fade */
+/* What is shown follows the phosphor softly (time constant), blurred 3 x 3:
+ * captures arrive a few per frame and each one used to land as a hard step,
+ * column by column. */
+#define GLOW_EASE_S 0.06f
 #define SN_BG_MAX 34.0f       /* zeroed sniffer: the room stays visible up to this colour index */
 
 static uint8_t *wf;            /* WF_ROWS x UW colour indices, ring */
 static int wf_head;
 static uint8_t *glow;          /* GLOW_H x UW intensity, row 0 at the top */
+static uint8_t *glow_disp;     /* the same as drawn: eased and blurred */
 static int64_t glow_at;
 UI_BSS static uint16_t occ_cnt[ZB_FFT_N];
 UI_BSS static int16_t col_k0[UW], col_k1[UW]; /* FFT bins behind each column */
+UI_BSS static float col_kf[UW];      /* FFT bin under the column centre, fractional */
 UI_BSS static bool col_spur[UW];      /* blanked in the analysis: show the neighbour */
 UI_BSS static uint8_t col_mark[UW];   /* 1, 6, 11 centre lines; BLE advertising */
 enum { MARK_WIFI = 1, MARK_BLE = 2 };
@@ -404,6 +415,7 @@ static void wf_layout(void) {
         if (k1 < k0) k1 = k0;
         col_k0[c] = (int16_t)k0;
         col_k1[c] = (int16_t)k1;
+        col_kf[c] = (f - LO_C) / bin_mhz + ZB_FFT_N / 2;
         col_spur[c] = fabsf(f - LO_C) < 0.5f || fabsf(f - 2440.0f) < 0.5f;
     }
 }
@@ -429,28 +441,65 @@ static void glow_add(float off, bool clipped) {
     for (int x = 0; x < UW; x++) {
         float m = -200;
         if (col_spur[x]) m = prev;
-        else for (int k = col_k0[x]; k <= col_k1[x]; k++) if (spec_tmp[k] > m) m = spec_tmp[k];
+        else {
+            /* Between the two nearest bins (no steps a bin wide), and the
+             * peak of any bin wholly inside a wide column. */
+            const int k = (int)floorf(col_kf[x]);
+            const float a = k >= 0 && k < ZB_FFT_N ? spec_tmp[k] : -200;
+            const float b = k + 1 >= 0 && k + 1 < ZB_FFT_N ? spec_tmp[k + 1] : -200;
+            const float t = col_kf[x] - k;
+            m = a < -150 ? b : b < -150 ? a : a + t * (b - a);
+            for (int j = col_k0[x] + 1; j < col_k1[x]; j++) if (spec_tmp[j] > m) m = spec_tmp[j];
+        }
         prev = m;
         if (m < -150 || m < lim) continue;
         const float lvl = m - off - ref - GLOW_BASE_DB;
         if (lvl <= 0) continue;
-        int h = (int)(lvl * GLOW_H / GLOW_DB + 0.5f);
-        if (h > GLOW_H) h = GLOW_H;
+        float hf = lvl * GLOW_H / GLOW_DB;
+        if (hf > GLOW_H) hf = GLOW_H;
+        const int h = (int)hf;
         for (int r = GLOW_H - h; r < GLOW_H; r++) {
             uint8_t *g = glow + r * UW + x;
             *g = *g > 255 - fill ? 255 : *g + fill;
+        }
+        /* The row the level ends in gets its share. */
+        const int part = (int)((hf - h) * fill + 0.5f);
+        if (h < GLOW_H && part) {
+            uint8_t *g = glow + (GLOW_H - 1 - h) * UW + x;
+            *g = *g > 255 - part ? 255 : *g + part;
         }
     }
 }
 
 static void glow_fade(int64_t now) {
     if (!glow) return;
-    if (glow_at) {
-        unsigned m = (unsigned)(256 * expf(-(now - glow_at) * 1e-6f / GLOW_TAU_S));
-        if (m > 255) m = 255;
-        for (uint8_t *p = glow, *e = glow + GLOW_H * UW; p < e; p++) *p = (uint8_t)((*p * m) >> 8);
-    }
+    const float dt = glow_at ? (now - glow_at) * 1e-6f : 0;
     glow_at = now;
+    unsigned m = (unsigned)(256 * expf(-dt / GLOW_TAU_S));
+    if (m > 255) m = 255;
+    /* One pass: shown = eased towards the phosphor blurred by [1 2 1] x
+     * [1 2 1] (taken before this frame's fade, scaled by it); row r - 1 fades
+     * once row r no longer needs it. */
+    const int k = (int)(256 * (1 - expf(-dt / GLOW_EASE_S)));
+    for (int r = 0; r < GLOW_H; r++) {
+        uint8_t *a = glow + (r ? r - 1 : r) * UW, *b = glow + r * UW;
+        const uint8_t *c = glow + (r < GLOW_H - 1 ? r + 1 : r) * UW;
+        uint8_t *d = glow_disp + r * UW;
+        int left = a[0] + 2 * b[0] + c[0], mid = left;
+        for (int x = 0; x < UW; x++) {
+            const int n = x + 1 < UW ? x + 1 : x;
+            const int right = a[n] + 2 * b[n] + c[n];
+            const int diff = (int)(((unsigned)(left + 2 * mid + right) * m) >> 12) - d[x];
+            int step = diff * k / 256;
+            if (!step && diff) step = diff > 0 ? 1 : -1; /* no stall short of the target */
+            d[x] = (uint8_t)(d[x] + step);
+            left = mid;
+            mid = right;
+        }
+        if (r) for (int x = 0; x < UW; x++) a[x] = (uint8_t)((a[x] * m) >> 8);
+    }
+    uint8_t *last = glow + (GLOW_H - 1) * UW;
+    for (int x = 0; x < UW; x++) last[x] = (uint8_t)((last[x] * m) >> 8);
 }
 
 /* One waterfall row: how often each column was busy since the last row
@@ -542,11 +591,26 @@ static void table_merge(const sdr_local_ap_t *got, int n, uint16_t mask) {
 
 typedef void (*strip_fn)(uint16_t *s, int y0, int h);
 
+/* Night theme: the whole picture in red (text, bars and header too, not
+ * only the waterfall), each pixel's strongest colour as its red, so it keeps
+ * its brightness and dark-adapted eyes are spared. */
+static void night_tint(uint16_t *s, int n) {
+    for (int i = 0; i < n; i++) {
+        const uint16_t v = (uint16_t)(s[i] >> 8 | s[i] << 8); /* pixels are byte-swapped RGB565 */
+        const unsigned r = v >> 11, g = (v >> 6) & 31, b = v & 31; /* 5-bit each (green's top bits) */
+        const unsigned m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        const uint16_t t = (uint16_t)(m << 11);
+        s[i] = (uint16_t)(t >> 8 | t << 8);
+    }
+}
+
 static void render(strip_fn fn, int top, int bottom) {
+    const bool night = !strcmp(themes[theme].name, "Nacht");
     for (int y = top; y < bottom; y += SH) {
         int h = bottom - y < SH ? bottom - y : SH;
         uint16_t *s = td_lcd_strip_at(y);
         fn(s, y, h);
+        if (night) night_tint(s, W * h);
         td_lcd_blit(0, y, W, h, s);
     }
 }
@@ -672,7 +736,7 @@ static void hold_bar(uint16_t *s, int y0, int h) {
     const int key = k & 2 ? 1 : k & 1 ? 0 : -1;
     if (key < 0) return;
     const int64_t held = esp_timer_get_time() - key_down_at[key];
-    const int64_t span = key == 1 && two_step_hold() ? 2 * LONG_US : LONG_US;
+    const int64_t span = key == 0 && two_step_hold() ? 2 * LONG_US : LONG_US;
     if (held < HOLD_SHOW_US) return;
     const int gw = UW / 16;
     int fill = (int)(held * UW / span);
@@ -729,16 +793,21 @@ static void draw_header(uint16_t *s, int y0, int h) {
 /* ---- page: waterfall --------------------------------------------------------- */
 
 static void wf_strip(uint16_t *s, int y0, int h) {
-    sv_fill(s, W, h, C_BLACK);
+    /* Title, phosphor and waterfall cover their rows: clear only below. */
+    if (y0 + h > AXIS_Y) {
+        const int a = y0 > AXIS_Y ? y0 : AXIS_Y;
+        sv_fill(s + (a - y0) * W, W, y0 + h - a, C_BLACK);
+    }
     draw_header(s, y0, h);
     /* Phosphor spectrum. */
     for (int y = y0 > GLOW_Y ? y0 : GLOW_Y; y < y0 + h && y < GLOW_Y + GLOW_H; y++) {
-        const uint8_t *src = glow ? glow + (y - GLOW_Y) * UW : NULL;
+        const uint8_t *src = glow_disp ? glow_disp + (y - GLOW_Y) * UW : NULL;
         uint16_t *row = s + (y - y0) * W;
         for (int x = 0; x < UW; x++) {
             const uint8_t v = src ? src[x] : 0;
             row[x] = v ? lut[v] : C_BLACK;
         }
+
     }
     if (y0 <= WF_Y - 1 && y0 + h > WF_Y - 1) rect(s, y0, h, 0, WF_Y - 1, UW, 1, C_BAR);
     /* Occupancy waterfall, newest row on top. */
@@ -1948,10 +2017,15 @@ static void draw_loop(void *arg) {
         if (td_lcd_has_frame()) {
             td_lcd_defer(true);
             draw_frame();
+#ifdef TD_LCD_ASYNC
+            td_lcd_present(); /* goes out while the next one is drawn */
+            td_lcd_defer(false);
+#else
             td_lcd_defer(false);
             lock_lcd();
             td_lcd_idle();
             unlock_lcd();
+#endif
             continue;
         }
 #endif
@@ -2040,7 +2114,7 @@ static void keys_loop(void *arg) {
     }
 }
 
-/* Right key held on in survey mode: 1 s one full scan, 2 s periodic
+/* Next-page key held on in survey mode: 1 s one full scan, 2 s periodic
  * scanning on/off (only where the scan mode shows). */
 static bool two_step_hold(void) { return !sniffer && (page == PAGE_WF || page == PAGE_CHAN); }
 
@@ -2079,8 +2153,10 @@ static void key_short(int i, int64_t now) {
     }
 }
 
-/* Left: tap next page, hold: colour theme (survey) or the page's own choice.
- * Right: tap survey <-> sniffer, hold: scan / zero. Holds are timed from the
+/* Next-page key: tap next page, hold: scan / zero (survey: 1 s scan, 2 s
+ * periodic scanning). Mode key: tap survey <-> sniffer, hold: colour theme
+ * or the page's own choice. key_long() takes the old numbering (0 = theme
+ * side), hence key_long(!i). Holds are timed from the
  * key task's press and release times, so they count even when this loop was
  * busy while the key went down or up. */
 static void handle_keys(int64_t now) {
@@ -2099,9 +2175,9 @@ static void handle_keys(int64_t now) {
         const int64_t dur = (held ? now : key_up_at[i]) - pressed_at[i];
         if (!long_done[i] && dur > LONG_US) {
             long_done[i] = true;
-            key_long(i, now);
+            key_long(!i, now); /* long holds swapped: the next-page key scans / zeroes */
         }
-        if (i && long_done[i] && !long2_done[i] && dur > 2 * LONG_US && two_step_hold()) {
+        if (!i && long_done[i] && !long2_done[i] && dur > 2 * LONG_US && two_step_hold()) {
             long2_done[i] = true;
             scan_auto = !scan_auto;
             if (scan_auto) next_scan_at = now;
@@ -2125,7 +2201,8 @@ void board_ui_init(void) {
 #endif
     wf = calloc(WF_ROWS, UW);
     glow = calloc(GLOW_H, UW);
-    bool ok = wf && glow && zb_init();
+    glow_disp = calloc(GLOW_H, UW);
+    bool ok = wf && glow && glow_disp && zb_init();
     zb_set_occupancy(occ_cnt);
     zb_set_maxspec(spec_tmp);
     theme_load();
@@ -2142,6 +2219,9 @@ void board_ui_init(void) {
     det_init();
     lcd_lock = xSemaphoreCreateMutex();
     ui_lock = xSemaphoreCreateMutex();
+#if defined(TD_LCD_ASYNC) && DRAW_CORE
+    td_lcd_async_start(lock_lcd, unlock_lcd, DRAW_CORE);
+#endif
 #ifdef UI_TASK_CAPS
     xTaskCreatePinnedToCoreWithCaps(draw_loop, "draw", 4096, NULL, 2, &draw_task, DRAW_CORE, UI_TASK_CAPS);
 #else

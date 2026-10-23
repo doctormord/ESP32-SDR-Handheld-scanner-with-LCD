@@ -49,7 +49,11 @@
 
 static esp_lcd_panel_io_handle_t io;
 static SemaphoreHandle_t chunk_done;
-static uint16_t *frame;         /* logical TD_LCD_W x TD_LCD_H, PSRAM */
+static uint16_t *frame;         /* logical TD_LCD_W x TD_LCD_H, PSRAM: drawn into */
+/* Two frames: while one goes out (td_lcd_present(), sent by send_loop), the
+ * next one is drawn into the other. */
+static uint16_t *frames[2];
+static const uint16_t *sending;  /* the frame flush() reads */
 static uint16_t *bounce[2];     /* internal DMA chunks */
 UI_BSS static uint16_t strip[TD_LCD_W * TD_STRIP_H];
 static bool dirty;
@@ -76,7 +80,7 @@ static void build_chunk(uint16_t *dst, int pr0) {
          * them into the chunk's columns; down the columns every pixel was a
          * new cache line. Matters now that unchanged chunks cost no bus time. */
         for (int y = 0; y < TD_LCD_H; y++) {
-            const uint16_t *src = frame + y * TD_LCD_W + pr0;
+            const uint16_t *src = sending + y * TD_LCD_W + pr0;
             uint16_t *d = dst + (PANEL_W - 1 - y);
             for (int r = 0; r < CHUNK_ROWS; r++) d[r * PANEL_W] = src[r];
         }
@@ -85,7 +89,7 @@ static void build_chunk(uint16_t *dst, int pr0) {
     for (int r = 0; r < CHUNK_ROWS; r++, dst += PANEL_W) {
         int pr = pr0 + r;
         if (ROTATE_180) pr = PANEL_H - 1 - pr;
-        const uint16_t *col = frame + pr / SCALE;
+        const uint16_t *col = sending + pr / SCALE;
         for (int pc = 0; pc < PANEL_W; pc++) dst[pc] = col[src_row[ROTATE_180 ? PANEL_W - 1 - pc : pc] * TD_LCD_W];
     }
 }
@@ -109,7 +113,8 @@ static uint32_t hash_chunk(const uint16_t *b) {
     return h;
 }
 
-static void flush(void) {
+static void flush_from(const uint16_t *f) {
+    sending = f;
     const int64_t now = esp_timer_get_time();
     const bool all = !hashes_valid || now - full_at >= FULL_US;
     if (all) full_at = now;
@@ -147,11 +152,12 @@ static void flush(void) {
 
 void td_lcd_init(void) {
     chunk_done = xSemaphoreCreateCounting(2, 2);
-    frame = heap_caps_calloc(TD_LCD_W * TD_LCD_H, 2, MALLOC_CAP_SPIRAM);
+    for (int i = 0; i < 2; i++) frames[i] = heap_caps_calloc(TD_LCD_W * TD_LCD_H, 2, MALLOC_CAP_SPIRAM);
+    frame = frames[0];
     for (int pc = 0; pc < PANEL_W; pc++) src_row[pc] = (int16_t)((PANEL_W - 1 - pc) / SCALE);
     for (int i = 0; i < 2; i++)
         bounce[i] = heap_caps_malloc(CHUNK_ROWS * PANEL_W * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    assert(frame && bounce[0] && bounce[1]);
+    assert(frames[0] && frames[1] && bounce[0] && bounce[1]);
 
     const ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE, .duty_resolution = LEDC_TIMER_10_BIT,
@@ -192,7 +198,7 @@ void td_lcd_init(void) {
     cmd(0x36, (const uint8_t[]){0x00}, 1);      /* MADCTL: RGB */
     cmd(0x2A, (const uint8_t[]){0, 0, (PANEL_W - 1) >> 8, (PANEL_W - 1) & 255}, 4);
     cmd(0x2B, (const uint8_t[]){0, 0, (PANEL_H - 1) >> 8, (PANEL_H - 1) & 255}, 4);
-    flush();                                    /* black before the light comes on */
+    flush_from(frame);                          /* black before the light comes on */
     cmd(0x29, NULL, 0);                         /* DISPON */
     vTaskDelay(pdMS_TO_TICKS(20));
 }
@@ -243,7 +249,46 @@ void td_lcd_idle(void) {
     if (dirty && !frame_defer) {
         dirty = false;
         const int64_t t0 = esp_timer_get_time();
-        flush();
+        flush_from(frame);
         td_lcd_flush_us = (unsigned)(esp_timer_get_time() - t0);
     }
+}
+
+/* Sending in the background: send_loop takes the display lock (the caller's,
+ * so RF captures still never overlap a transfer) and sends the frame handed
+ * over by td_lcd_present(); sent_sem is free while no frame is on its way. */
+static TaskHandle_t send_task;
+static SemaphoreHandle_t sent_sem;
+static void (*send_lock)(void), (*send_unlock)(void);
+
+static void send_loop(void *arg) {
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        send_lock();
+        const int64_t t0 = esp_timer_get_time();
+        flush_from(frames[frame == frames[0]]);
+        td_lcd_flush_us = (unsigned)(esp_timer_get_time() - t0);
+        send_unlock();
+        xSemaphoreGive(sent_sem);
+    }
+}
+
+void td_lcd_async_start(void (*lock)(void), void (*unlock)(void), int core) {
+    send_lock = lock;
+    send_unlock = unlock;
+    sent_sem = xSemaphoreCreateBinary();
+    xSemaphoreGive(sent_sem);
+    xTaskCreatePinnedToCoreWithCaps(send_loop, "lcd", 3072, NULL, 4, &send_task, core, MALLOC_CAP_SPIRAM);
+}
+
+/* The frame just drawn goes out in the background; drawing goes on in the
+ * other one (two frames old: every page redraws all of it). Waits only
+ * while the frame before is still being sent. */
+void td_lcd_present(void) {
+    if (!send_task) return;
+    xSemaphoreTake(sent_sem, portMAX_DELAY);
+    frame = frames[frame == frames[0]];
+    dirty = false;
+    xTaskNotifyGive(send_task);
 }
