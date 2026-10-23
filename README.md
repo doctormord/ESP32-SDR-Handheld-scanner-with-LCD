@@ -71,7 +71,9 @@ band, and analyses them on the chip:
   transmits there: all Wi-Fi networks including foreign and hidden ones,
   Bluetooth, Zigbee, microwave ovens.
 - **Network names** come from a normal Wi-Fi scan that runs in small pieces
-  between the measurements (every 9 s by default).
+  between the measurements (every 9 s by default), only while NETZE is shown
+  (and once at start, or on request): a scan stops the picture for a moment, and
+  the other pages, best channel included, run on the SDR measurement alone.
 - The hardware AGC sets the gain for every packet; each sample carries its gain
   index and is scaled back to a common level. A phone right next to the board
   (speed test) therefore does not overdrive the picture.
@@ -457,6 +459,13 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
 - Display AXS15231B, 320×480 portrait, on QSPI (SPI2): CS 45, SCK 47,
   D0–D3 = 21/48/40/39, backlight 1. It runs at 40 MHz because the pins go
   through the GPIO matrix; 80 MHz showed scan lines.
+- Partial updates: the frame goes out in 40 chunks of 12 panel rows (each a
+  12-pixel-wide vertical slice of the landscape picture); chunks that did not
+  change since they were last sent are skipped, the rest go out behind a row
+  window (RASET). Calm pages send a few chunks or none, the waterfall all 40;
+  every 2 s the whole frame goes out. `TDSTAT?` shows `chunks n`, and
+  `TDLCDWIN [x y w h]` draws a red block through the window commands to check
+  another panel.
 - Touch AXS15231B on I²C: SDA 4, SCL 8, address 0x3B. BOOT button GPIO0.
 - 16 MB flash, 8 MB octal PSRAM (frame buffer and large tables live there).
 - USB serial/JTAG (native USB-C).

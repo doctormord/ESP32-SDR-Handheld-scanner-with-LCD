@@ -69,6 +69,18 @@ static void cmd(uint8_t c, const uint8_t *data, size_t n) { esp_lcd_panel_io_tx_
 #define SCALE (PANEL_H / TD_LCD_W)
 static int16_t src_row[PANEL_W]; /* per panel column: offset of its logical row */
 static void build_chunk(uint16_t *dst, int pr0) {
+    if (SCALE == 1 && !ROTATE_180) {
+        /* Native size: read the picture along its rows, CHUNK_ROWS adjacent
+         * pixels per logical row (one or two PSRAM cache lines), and scatter
+         * them into the chunk's columns; down the columns every pixel was a
+         * new cache line. Matters now that unchanged chunks cost no bus time. */
+        for (int y = 0; y < TD_LCD_H; y++) {
+            const uint16_t *src = frame + y * TD_LCD_W + pr0;
+            uint16_t *d = dst + (PANEL_W - 1 - y);
+            for (int r = 0; r < CHUNK_ROWS; r++) d[r * PANEL_W] = src[r];
+        }
+        return;
+    }
     for (int r = 0; r < CHUNK_ROWS; r++, dst += PANEL_W) {
         int pr = pr0 + r;
         if (ROTATE_180) pr = PANEL_H - 1 - pr;
@@ -77,15 +89,57 @@ static void build_chunk(uint16_t *dst, int pr0) {
     }
 }
 
+/* Partial updates: this panel honours row windows (RASET) over the full
+ * width, so a chunk whose pixels did not change since it was last sent is
+ * skipped, and each run of changed chunks goes out after a RASET to its
+ * first row (RAMWR, then RAMWRC). The comparison is a hash of the built
+ * chunk; every FULL_US the whole frame goes out anyway, in case the panel
+ * lost something. */
+#define FULL_US 2000000
+static uint32_t chunk_hash[CHUNKS];
+static bool hashes_valid;
+static int64_t full_at;
+unsigned td_lcd_chunks_sent; /* diagnostics: chunks sent by the last flush */
+
+static uint32_t hash_chunk(const uint16_t *b) {
+    const uint32_t *w = (const uint32_t *)b;
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < CHUNK_ROWS * PANEL_W / 2; i++) h = (h ^ w[i]) * 16777619u;
+    return h;
+}
+
 static void flush(void) {
-    for (int i = 0; i < 2; i++) xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
+    const int64_t now = esp_timer_get_time();
+    const bool all = !hashes_valid || now - full_at >= FULL_US;
+    if (all) full_at = now;
+    /* chunk_done counts free bounce buffers; sends alternate between them,
+     * so the one built next is free once at most one send is in flight. */
+    int cur = 0;
+    bool open = false; /* a window from an earlier changed chunk runs on */
+    unsigned sent = 0;
     for (int k = 0; k < CHUNKS; k++) {
-        uint16_t *b = bounce[k & 1];
-        if (k >= 2) xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
+        xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
+        uint16_t *b = bounce[cur];
         build_chunk(b, k * CHUNK_ROWS);
-        esp_lcd_panel_io_tx_color(io, COLOR(k ? 0x3C : 0x2C), b, CHUNK_ROWS * PANEL_W * 2);
+        const uint32_t h = hash_chunk(b);
+        if (!all && h == chunk_hash[k]) {
+            xSemaphoreGive(chunk_done); /* not sent: the buffer stays free */
+            open = false;
+            continue;
+        }
+        chunk_hash[k] = h;
+        if (!open) {
+            const int r0 = k * CHUNK_ROWS;
+            cmd(0x2B, (const uint8_t[]){r0 >> 8, r0 & 255, (PANEL_H - 1) >> 8, (PANEL_H - 1) & 255}, 4);
+        }
+        esp_lcd_panel_io_tx_color(io, COLOR(open ? 0x3C : 0x2C), b, CHUNK_ROWS * PANEL_W * 2);
+        open = true;
+        cur ^= 1;
+        sent++;
     }
-    /* Back to two free bounce buffers once both last chunks are out. */
+    hashes_valid = true;
+    td_lcd_chunks_sent = sent;
+    /* Back to two free bounce buffers once the last chunks are out. */
     for (int i = 0; i < 2; i++) xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
     for (int i = 0; i < 2; i++) xSemaphoreGive(chunk_done);
 }
@@ -146,6 +200,25 @@ void td_lcd_backlight(unsigned percent) {
     if (percent > 100) percent = 100;
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, percent * 1023 / 100);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+}
+
+/* Diagnostics: one w x h block of colour c at panel column x, row y through
+ * the window commands (CASET/RASET + RAMWR), then the full window again. On a
+ * panel that honours windows the block appears there; one that ignores them
+ * paints it from the top left. Caller holds the display. */
+void td_lcd_test_window(int x, int y, int w, int h, uint16_t c) {
+    td_lcd_idle();
+    for (int i = 0; i < 2; i++) xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
+    hashes_valid = false; /* the block overwrote chunks: send all next time */
+    if (w * h > CHUNK_ROWS * PANEL_W) h = CHUNK_ROWS * PANEL_W / w;
+    for (int i = 0; i < w * h; i++) bounce[0][i] = c;
+    cmd(0x2A, (const uint8_t[]){x >> 8, x & 255, (x + w - 1) >> 8, (x + w - 1) & 255}, 4);
+    cmd(0x2B, (const uint8_t[]){y >> 8, y & 255, (y + h - 1) >> 8, (y + h - 1) & 255}, 4);
+    esp_lcd_panel_io_tx_color(io, COLOR(0x2C), bounce[0], (size_t)w * h * 2);
+    xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
+    cmd(0x2A, (const uint8_t[]){0, 0, (PANEL_W - 1) >> 8, (PANEL_W - 1) & 255}, 4);
+    cmd(0x2B, (const uint8_t[]){0, 0, (PANEL_H - 1) >> 8, (PANEL_H - 1) & 255}, 4);
+    for (int i = 0; i < 2; i++) xSemaphoreGive(chunk_done);
 }
 
 uint16_t *td_lcd_strip(void) { return strip; }
