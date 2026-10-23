@@ -140,3 +140,40 @@ this repository unless noted.
 - Recorded as ideas: ESP32-C5 for 5 GHz Wi-Fi; a broadband log power
   detector (AD8317/AD8318) on the JC3248's ADC for cellular activity.
 - Owner continues on a Mac; the Windows dev PC session ends here.
+
+## 2026-10-23 — FOCUS CHANNEL measured on both boards (Mac)
+
+- Mac build environment: ESP-IDF `25fe69f` in `~/esp-idf-sdr` (not
+  `~/esp/esp-idf-sdr` as in CLAUDE.md), both boards build.
+- `TDRATE d [lo]`: optional LO (2300–2600) and the expected offset for it.
+  A second LO tells a real carrier from a mirrored one.
+- T-Display: the 2440 MHz crystal harmonic sits where expected at 40 and
+  16 MS/s at every LO tried (2438 / 2442 / 2446 / 2450 → +2.03 / −2.03 /
+  −5.94 / −10.00 MHz at 40 MS/s; +2.00 / −2.00 / −6.00 at 16 MS/s).
+- JC3248: the strongest steady line is not the harmonic but a carrier at
+  2448.0 MHz (+10…15 dB over the median), followed through LO 2438–2450 at
+  all three rates (+10.00 / +5.94 / +2.00 / −2.00 MHz), so rates and
+  spectrum orientation are right. Not on the T-Display; 2448 = 51 × 48 MHz
+  suggests the S3's USB-Serial/JTAG (not proven). It does not visibly
+  disturb FOCUS: at Zigbee 19 it lands on the LO (DC, removed), at Zigbee 20
+  5 MHz outside the target.
+- 80 MS/s could not be checked against a tone on either board: Wi-Fi bursts
+  (11 networks, channels 9–13 busy) are always stronger. It is the survey
+  rate since v1.0.
+- Listening time (captures/s × capture length):
+
+  | | Survey 80 MS/s | FOCUS Wi-Fi 40 MS/s | FOCUS BLE/Zigbee 16 MS/s |
+  |---|---|---|---|
+  | JC3248 | 46.2/s → 9.3 ms/s | 49–50/s → 20.2 ms/s (2.2×) | 49/s → 49.4 ms/s (5.3×) |
+  | T-Display | 47.0/s → 4.8 ms/s | 46–47/s → 9.4–9.6 ms/s (2.0×) | 46–47/s → 23.6–24.1 ms/s (5.0×) |
+
+- Display checked by the owner on both boards: fine. Seen: a Wi-Fi target
+  shows a gap in the middle of the span (LO on the channel centre, DC bins
+  removed); BLE/Zigbee sit 3 MHz off the LO and have none.
+- Owner: stepping through 32 targets is tedious → split into FOCUS WIFI /
+  BLE / ZIGBEE pages, channel per page kept in NVS, a held key steps once
+  per second. Targets by network name rejected: FOCUS is pure SDR (energy,
+  no idea who sends); per-network level is LEVEL WIFI SINGLE.
+- macOS: opening the serial port resets both boards even with DTR/RTS off
+  (pyserial); the T-Display's boot log (115200) then reads as zero bytes at
+  2 Mbaud — strip them before parsing.
