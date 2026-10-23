@@ -222,3 +222,30 @@ this repository unless noted.
 - Release v1.2.0 on GitHub with both images and an extended changelog.
 - Mac: git over HTTPS has no credentials here; push with
   `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`.
+
+## 2026-10-24 — 5G n78 probe: negative, dropped (branch `probe-5g`)
+
+- `TDPROBE f0 f1 step [n]`: per LO, n captures at 80 MS/s and fixed gain;
+  floor, strongest bin over the median and its offset, captures with a bin
+  > 15 dB over the median, expected offset of the nearest 40 MHz harmonic.
+- Found on the way, S3 only: `rx_recalibrate()` releases manual gain for
+  its gain sweep and the UI tune path (`sdr_local_tune` → `s3_tune`) did
+  not apply it again; `sdr_local_set_gain` then returned early (mode
+  unchanged). After any recalibrating tune the receiver ran on hardware AGC:
+  floor −40 instead of −61 dB at fixed gain, bimodal depending on whether
+  the command recalibrated. Fixed (`s3_recalibrated` → `gain_apply()`).
+  Survey ref (−59.1…−59.5 before, −60.0…−60.4 after) and sniffer pages
+  (AGC) unchanged; the ESP32 receiver re-applies gain after every tune.
+- With correct gain, JC3248: floor −60…−63 dB from 2300 to 2600 MHz, Wi-Fi
+  bursts fade above 2500. From ~2900 to 3800 MHz the only line sits at a
+  fixed offset from the requested LO (+27.19, sometimes +30.94 MHz) at every
+  LO — generated in the receiver, or the PLL does not move. At LO
+  3590–3610 (4 MHz steps) no harmonic at the expected −10…+10 MHz
+  (3600 = 90 × 40 = 75 × 48 MHz); at 2442 the harmonic shows (+12 dB).
+- Phone on 5G (Wi-Fi off), flat against the board, speed tests for 2 min,
+  three sweeps 3400–3800 (50 MHz steps, 30 captures): no bursts (1 of 27
+  LO runs vs 7 of 27 without the phone, all at the DC edges), no new lines,
+  floor ~1 dB higher (−63.5 vs −64.5 dB). Not usable; phone band not
+  verified (n78 assumed).
+- Decision: dropped; `TDPROBE` stays as a diagnostic. Cellular remains the
+  broadband detector idea (AD8317/AD8318) in BACKLOG.
