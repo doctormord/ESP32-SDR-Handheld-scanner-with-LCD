@@ -243,6 +243,21 @@ void td_lcd_test_window(int x, int y, int w, int h, uint16_t c) {
     for (int i = 0; i < 2; i++) xSemaphoreGive(chunk_done);
 }
 
+/* Diagnostics (TDSPINOISE): four chunks of the picture onto the bus without
+ * waiting, so a capture taken right after runs while the panel is fed;
+ * td_lcd_noise_settle() waits for them and makes the next frame go out
+ * whole (the extra pixels landed somewhere). Caller holds the display. */
+void td_lcd_noise_burst(void) {
+    for (int i = 0; i < 4; i++)
+        esp_lcd_panel_io_tx_color(io, COLOR(0x3C), bounce[i & 1], CHUNK_ROWS * PANEL_W * 2);
+}
+void td_lcd_noise_settle(void) {
+    vTaskDelay(pdMS_TO_TICKS(5));
+    while (xSemaphoreTake(chunk_done, 0) == pdTRUE) {}
+    for (int i = 0; i < 2; i++) xSemaphoreGive(chunk_done);
+    hashes_valid = false;
+}
+
 uint16_t *td_lcd_strip(void) { return strip; }
 uint16_t *td_lcd_strip_at(int y) { return y >= 0 && y < TD_LCD_H ? frame + y * TD_LCD_W : strip; }
 

@@ -40,6 +40,10 @@ void td_lcd_idle(void);
 /* Diagnostics: a block of colour c through the panel's window commands. */
 void td_lcd_test_window(int x, int y, int w, int h, uint16_t c);
 #define TD_LCD_WINDOW_TEST 1
+/* Diagnostics: display traffic during a capture (TDSPINOISE). */
+#define TD_LCD_NOISE_TEST 1
+void td_lcd_noise_burst(void);
+void td_lcd_noise_settle(void);
 /* While deferred, td_lcd_idle() does not send (the picture is being drawn on
  * the other core); td_lcd_has_frame() is always true here. */
 bool td_lcd_has_frame(void);

@@ -173,6 +173,22 @@ void td_lcd_idle(void) {
     for (int i = 0; i < 2; i++) xSemaphoreGive(free_strips);
 }
 
+/* Diagnostics (TDSPINOISE): four strips of whatever the strip buffer holds
+ * onto the bus without waiting, so a capture taken right after runs while
+ * the panel is fed; td_lcd_noise_settle() waits for them and has the next
+ * frame sent whole. Caller holds the display. */
+void td_lcd_noise_burst(void) {
+    for (int i = 0; i < 2; i++) xSemaphoreTake(free_strips, pdMS_TO_TICKS(100));
+    window(0, 0, TD_LCD_W, TD_LCD_H);
+    for (int i = 0; i < 4; i++) esp_lcd_panel_io_tx_color(io, i ? 0x3C : 0x2C, strips[i & 1], (size_t)TD_LCD_W * TD_STRIP_H * 2);
+}
+void td_lcd_noise_settle(void) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    while (xSemaphoreTake(free_strips, 0) == pdTRUE) {}
+    for (int i = 0; i < 2; i++) xSemaphoreGive(free_strips);
+    frame_changed = true;
+}
+
 void td_lcd_blit(int x, int y, int w, int h, uint16_t *strip) {
     if (frame) {
         /* Into the frame (nothing to copy when drawn there in place). */

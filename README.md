@@ -521,10 +521,31 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 | `TDZB?` | Zigbee channels: level over the floor / activity per channel |
 | `TDCOV?` / `TDCOVSEL -1\|0\|1` | coverage page: network, channel, RSSI, min, max, frames/s / choose previous, strongest, next |
 | `TDBLE?` | BLE list: every device with MAC, address type, RSSI, average, max, manufacturer id, packets, age, name |
+| `TDSPINOISE [n]` | what display traffic during a capture costs: `n` pairs (default 40) of captures at a fixed gain, alternately with the display bus quiet and while picture data goes out; prints floor, mean spectrum change, the worst bins and each channel's level and airtime, quiet vs busy (survey mode) |
 
 The ESP-SDR host protocol (`INFO`, `FREQ`, `CAP`, …) and the
 [browser viewer](https://espargos.net/espsdr/app/) work as before; while a host
 holds the radio, the display shows that and pauses.
+
+### Why captures wait for a quiet display bus
+
+Every capture waits until no picture data is on the display bus (on the
+JC3248 the sending pauses between two chunks for it). `TDSPINOISE 100` shows
+what that buys, measured in a room with live Wi-Fi (two runs each, gain 50,
+AGC off):
+
+| | JC3248W535 (QSPI, 40 MHz) | T-Display (SPI, 80 MHz) |
+|---|---|---|
+| Noise floor | **+2.1 to +2.3 dB** | **+1.5 dB** |
+| Whole spectrum, mean | +3.4 to +3.6 dB | +2.1 dB |
+| Bins more than 6 dB up | 13–16 of 210 | 4–6 of 210 |
+| Spurs | +8 to +10 dB at 2420, 2430, 2460, 2470 MHz (10 MHz raster of the quad bus) | +6 to +8 dB at 2410–2416 and 2472–2475 MHz (near 30 × and 31 × 80 MHz) |
+| Channel levels | +2 to +5 dB too high | +1 to +4.5 dB too high |
+| Airtime | up to +3 points on channels 6–12 | channel 1 shows 15–26 % instead of 3–6 %, channels 2–3 up to 3× |
+
+So a capture during display traffic would lose 1.5–2 dB of sensitivity,
+show spurs that look like signals, and count display noise as airtime —
+on the T-Display mostly at the band edges (channels 1–3 and 13).
 
 ---
 
