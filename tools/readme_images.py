@@ -115,7 +115,7 @@ def frame(screen, marks, name):
 def page_waterfall():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'WASSERFALL VOLL', '7 Netze', C_CYAN, '1/5', 'best 11')
+    header(d, 'WASSERFALL VOLL', '7 Netze', C_CYAN, '1/5')
     gy, gh = P(10), P(34)
     wy, ay = gy + gh + 1, H - P(10)
     aps = [(1, 0.55, 0.9), (6, 0.8, 0.95), (11, 0.15, 0.55), (3, 0.08, 0.35)]
@@ -158,15 +158,15 @@ def page_waterfall():
         if random.random() < 0.3:
             x = random.randrange(W)
             d.point((x, y), fill=lut(0.2))
-    # Channel numbers coloured by airtime, BLE marks on the axis.
-    air = {1: 0.42, 6: 0.71, 11: 0.12, 3: 0.06}
+    # Best channel at the foot of the phosphor plot; fixed channel numbers.
+    tw = d.textlength('best', font=TXT)
+    d.rectangle([ch_x(11) - tw / 2 - P(2), wy - 1 - P(10), ch_x(11) + tw / 2 + P(2), wy - 2], fill=C_BG)
+    text(d, ch_x(11), wy - 1 - P(10), 'best', C_GREEN, anchor='ma')
     for ch in range(1, 14):
-        a = air.get(ch, 0)
-        c = air_colour(a) if a >= 0.05 else C_CYAN if ch in (1, 6, 11) else C_DIM
-        text(d, ch_x(ch), ay + P(1), str(ch), c, anchor='ma')
+        text(d, ch_x(ch), ay + P(1), str(ch), C_CYAN if ch in (1, 6, 11) else C_DIM, anchor='ma')
     for f in (2402, 2426, 2480):
         d.rectangle([mhz_x(f) - 2, ay, mhz_x(f) + 2, ay + 1], fill=C_BLE)
-    frame(img, [(None, P(5)), (mhz_x(2424), gy + P(26)), (mhz_x(2437), wy + 60), (mhz_x(2480) - 16, wy + 110), (None, ay + P(6))],
+    frame(img, [(None, P(5)), (mhz_x(2424), gy + P(26)), (mhz_x(2437), wy + 60), (mhz_x(2480) - 16, wy + 110), (None, ay + P(6)), (ch_x(11) + 40, wy - P(6))],
           'page-waterfall.png')
 
 
@@ -193,7 +193,7 @@ def page_networks():
 def page_channels():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'KANAELE WIFI', '7 Netze', C_CYAN, '3/5', 'best 11')
+    header(d, 'KANAELE WIFI', '7 Netze', C_CYAN, '3/5')
     cw = W // 13
     x0 = (W - cw * 13) // 2
     bar_y, bar_h = P(22), P(88)
@@ -218,8 +218,8 @@ def page_channels():
             d.rectangle([x + P(2), yy, x + cw - P(2) - 1, yy + P(2) - 1], fill=C_WHITE)
         if c in aps:
             text(d, x + cw / 2, P(12), str(aps[c]), C_TEXT, anchor='ma')
-        text(d, x + cw / 2, bar_y + bar_h + P(3), str(c), C_GREEN if c == 11 else C_CYAN if main else C_DIM, anchor='ma')
-        text(d, x + cw / 2, bar_y + bar_h + P(13), str(round(a * 100)), air_colour(a), anchor='ma')
+        text(d, x + cw / 2, bar_y + bar_h + P(3), str(round(a * 100)), air_colour(a), anchor='ma')
+        text(d, x + cw / 2, bar_y + bar_h + P(13), str(c), C_CYAN if main else C_DIM, anchor='ma')
     xc = lambda c: x0 + (c - 1) * cw + cw / 2
     frame(img, [(None, P(16)), (xc(6), bar_y + bar_h - 50), (xc(5), bar_y + bar_h - int(0.93 * bar_h) + 2), (xc(11), bar_y + 30), (None, bar_y + bar_h + P(8)), (None, bar_y + bar_h + P(18))],
           'page-channels.png')
@@ -294,7 +294,7 @@ def page_ble():
 def page_zigbee():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'KANAELE ZIGBEE', '7 Netze', C_CYAN, '4/5')
+    header(d, 'KANAELE ZIGBEE', '', C_CYAN, '4/5')
     cw = W // 16
     x0 = (W - cw * 16) // 2
     bar_y, bar_h = P(22), P(88)
@@ -314,8 +314,8 @@ def page_zigbee():
         d.rectangle([x + P(2), bar_y + bar_h - lh, x + cw - P(2) - 1, bar_y + bar_h - 1], fill=air_colour(act[k]))
         yy = bar_y + bar_h - int(hold[k] / 40 * bar_h)
         d.rectangle([x + P(1), yy, x + cw - P(1) - 1, yy + P(2) - 1], fill=C_WHITE)
-        text(d, x + cw / 2, bar_y + bar_h + P(3), str(c), C_CYAN if gap else C_DIM, anchor='ma')
-        text(d, x + cw / 2, bar_y + bar_h + P(13), str(round(act[k] * 100)), air_colour(act[k]), anchor='ma')
+        text(d, x + cw / 2, bar_y + bar_h + P(3), str(round(act[k] * 100)), air_colour(act[k]), anchor='ma')
+        text(d, x + cw / 2, bar_y + bar_h + P(13), str(c), C_CYAN if gap else C_DIM, anchor='ma')
     frame(img, [(xc(15), bar_y + 20), (xc(13), bar_y + bar_h - 30), (xc(19), bar_y + bar_h - int(24 / 40 * bar_h) - 14),
                 (None, bar_y + bar_h + P(8)), (None, bar_y + bar_h + P(18))], 'page-zigbee.png')
 
