@@ -11,7 +11,7 @@ It runs on two boards:
 
 | Board | Chip | Display | Notes |
 |---|---|---|---|
-| **LILYGO TTGO T-Display** | ESP32 | 1.14" ST7789, 240×135, SPI | two buttons, optional touch pads |
+| **LILYGO TTGO T-Display** | ESP32 | 1.14" ST7789, 240×135, SPI | two buttons |
 | **Guition JC3248W535** (JC3248W535EN) | ESP32-S3 N16R8 | 3.5" AXS15231B, 480×320, QSPI, capacitive touch | gapless capture, BLE device list |
 
 This project builds on:
@@ -78,7 +78,9 @@ band, and analyses them on the chip:
   on periodic scanning: every second one third of the band on WASSERFALL,
   NETZE and KANAELE WIFI (header: `scan auto`), so the network counts follow
   you. The picture keeps being drawn during a scan (on the second core); only
-  the measurement pauses for the 0.15–0.3 s a scan takes. The receiver is only
+  the measurement pauses for the 0.15–0.3 s a scan takes. Without periodic
+  scanning (`scan manual`), arriving at WASSERFALL, NETZE or KANAELE WIFI runs
+  one full scan. The receiver is only
   recalibrated for a scan when it covers channels below the measuring
   frequency.
 - The hardware AGC sets the gain for every packet; each sample carries its gain
@@ -275,11 +277,15 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 | **Left** | next page | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
 | **Right** | survey ↔ sniffer | survey: full network scan now; kept held to 2 s: periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
 
-- **T-Display:** left = GPIO0 button, right = GPIO35 button. Two optional touch
-  pads on the header pins do the same: GPIO32 (left) and GPIO33 (right); a wire
-  or a piece of foil works, even through a 5 mm plastic case.
+- **T-Display:** left = GPIO0 button, right = GPIO35 button.
 - **JC3248:** touch the left or right half of the screen. The BOOT button
-  works as the left button.
+  works as the left button. A touch that drops out for less than 0.12 s
+  during a long hold still counts as held.
+- **Hold bar:** while a button is held, a bar along the foot of the title row
+  fills green towards a red goal at the right; once it is all red the hold has
+  done its job and you can let go. For the right button in survey mode it runs
+  over 2 s with a white mark at 1 s (scan) and the goal at 2 s (periodic
+  scanning on/off).
 
 ### On-screen words
 
@@ -289,7 +295,7 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 | PEGEL WIFI SINGLE | level (coverage) of a single Wi-Fi network |
 | SUCHER BREITBAND / DETEKTOR PEAKS / PEILEN STRONGEST / BLE LISTE | wideband finder / peak detector / bearing on the strongest / BLE list |
 | `Rahmen/s`, `kein Signal`, `lang: Netz` | frames per second, no signal, hold: network |
-| `7 Netze`, `<versteckt>`, `scan auto` | 7 networks, hidden network, periodic scanning on |
+| `7 Netze`, `<versteckt>`, `scan auto` / `scan manual` | 7 networks, hidden network, periodic scanning on / off |
 | `stelle` / `lerne` / `pruefe` / `genullt` / `ohne Basis` | ranging gain / learning / checking / zeroed / not zeroed |
 | `Spitze`, `Treffer/s`, `Bestwert` | peak, hits per second, best value |
 | `aktiv`, `gesamt` | active (heard recently), total |
@@ -445,10 +451,7 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
 - Display ST7789 on SPI3: MOSI 19, SCLK 18, CS 5, DC 16, RST 23, backlight 4.
   Wrong orientation or swapped red/blue on a clone: `MADCTL` / `ROW_OFFSET` in
   [main/boards/tdisplay/lcd.c](main/boards/tdisplay/lcd.c).
-- Buttons GPIO0 (left) and GPIO35 (right); touch pads T9 = GPIO32 and
-  T8 = GPIO33. Sensitivity: `TOUCH_RATIO` in
-  [main/boards/tdisplay/io.c](main/boards/tdisplay/io.c), `TDSTAT?` prints the raw
-  readings.
+- Buttons GPIO0 (left) and GPIO35 (right).
 - Serial: the CH9102/CP210x bridge at 2 Mbaud.
 - No PSRAM; about 50 frames/s.
 - Runs on both cores: core 0 has Wi-Fi, the PHY and the measurements, core 1
@@ -499,7 +502,7 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 
 | Command | Reply |
 |---|---|
-| `TDSTAT?` | survey state: page, gain, clipping, frame time, touch readings |
+| `TDSTAT?` | survey state: page, gain, clipping, frame time, touch point (JC3248) |
 | `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | switch page / mode / sniffer page |
 | `TDSCAN` / `TDSCANAUTO 0\|1` | full network scan now / periodic scanning off or on |
 | `TDSCANCH c [ms]` | scan only channel `c` (passive for `ms` if given) and list every answer, raw (T-Display) |
@@ -539,7 +542,7 @@ holds the radio, the display shows that and pauses.
 | [main/boards/common/wifi_ui.c](main/boards/common/wifi_ui.c) | the UI of both boards: survey and sniffer pages, themes, zeroing, serial commands |
 | [main/boards/common/zb.c](main/boards/common/zb.c) | band analysis: max-hold spectrum, occupancy, airtime, per-segment CFAR |
 | [main/boards/common/aafont.h](main/boards/common/aafont.h) | anti-aliased digits and text (generated by [tools/gen_fonts.py](tools/gen_fonts.py)) |
-| [main/boards/tdisplay/](main/boards/tdisplay) | T-Display: ST7789 driver, buttons and touch pads |
+| [main/boards/tdisplay/](main/boards/tdisplay) | T-Display: ST7789 driver, buttons |
 | [main/boards/jc3248/](main/boards/jc3248) | JC3248W535: QSPI panel with PSRAM frame, touch |
 | [main/targets/esp32/receiver.c](main/targets/esp32/receiver.c) | ESP32 receiver backend, local UI API, snapshot channelizer |
 | [main/targets/esp32s3/receiver.c](main/targets/esp32s3/receiver.c) | ESP32-S3 receiver backend, local UI API, BLE start mode |
