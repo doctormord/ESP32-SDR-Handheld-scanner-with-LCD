@@ -1,0 +1,127 @@
+# HISTORY.md — development log
+
+Append-only, oldest first. Each entry: date, what changed, what was measured
+or learned, what was tried and rejected. Commit hashes refer to `main` of
+this repository unless noted.
+
+---
+
+## 2026-10-20 — Start: an SDR scanner on the T-Display
+
+- Goal: turn the LILYGO TTGO T-Display (ESP32) into a handheld 2.4 GHz
+  scanner, using ESPARGOS/esp-sdr's raw I/Q capture from the Wi-Fi receiver
+  and the phosphor ("GLOW") idea of Skydev0h/esp-sdr-glow.
+- First pages: waterfall with phosphor spectrum, network list (Wi-Fi scan),
+  channel airtime measured from the I/Q data (no packet decoding).
+- Fast strip-based drawing on the ST7789 (SPI 80 MHz), anti-aliased digits,
+  seven colour themes stored in NVS.
+
+## 2026-10-20/21 — Sniffer mode, detector, second board
+
+- Sniffer mode for finding active devices nearby: FINDER (wideband
+  waterfall with zeroing), DETECTOR (64-bin channelizer, every 16 µs),
+  BEARING (warmer/colder with body-shadow bearing).
+- Zeroing: learns the room's maximum per frequency, then a CFAR check sets
+  the margin (`learning` → `checking` → `zeroed`).
+- Live tests with a smartwatch held to the antenna; Bluetooth headphones show
+  as "confetti" across the band (Classic hopping), BLE as dots on 37/38/39.
+  A BLE watch that only syncs rarely is better found by decoding
+  advertising → BLE device list.
+- Second board: Guition JC3248W535 (ESP32-S3, 480×320 QSPI touch). S3
+  receiver backend with gapless ring capture (ENV channelizer) for the
+  detector. BLE list via NimBLE observer in a separate boot mode (RAM), BLE 5
+  extended advertising included. BLE colours: strong = green (as Wi-Fi).
+- Repository published: github.com/doctormord/ESP32-SDR-Handheld-scanner-with-LCD
+  (`1bebb97`), README in English with mockups (`tools/readme_images.py`).
+
+## 2026-10-21/22 — Dual core, calibration bug, release v1.0.0
+
+- Detector rows kept out of the survey waterfall (`d32bb23`).
+- T-Display uses both cores: core 0 measures, core 1 draws and transforms
+  the detector's snapshots (+54 % detector listening) (`699f0da`).
+- Bug: networks on low channels missing from the Wi-Fi scan. Cause: the
+  SDR's receiver calibration at 2442 MHz deafened the scan below it. Fix:
+  calibrate at channel 1 (S3: groups 1–7 at ch1, 8–14 at ch8), in
+  NULL+promiscuous state (STA mode hangs DC cal) (`b1ebbbc`, `07e4a37`).
+- Release v1.0.0 (2026-10-22); announcement on ESPARGOS/esp-sdr#17.
+
+## 2026-10-23 — Survey pages, JC3248 speed, UI polish
+
+- New pages: KANAELE ZIGBEE (802.15.4 ch 11–26, two LO windows) and PEGEL
+  WIFI SINGLE (RSSI of one network as fast as it sends, via promiscuous
+  callback; `sdr_local_watch_*` API) (`0ccf5db`).
+- JC3248 partial display updates: panel honours row windows (RASET); chunks
+  hashed, unchanged ones skipped (calm pages 0–7 of 40 chunks). Column
+  windows work only 16-aligned and gave no speed-up (CPU-bound) — reverted.
+  Network scans only on the networks page (`dba9fbe`, `9783b38`).
+- Header and channel numbers made static (partial updates can skip them);
+  hotspot page control dropped (`b76bdb1`).
+- JC3248 dual core: draw task on core 1 (`09e9b5e`). One consistent state per
+  frame via `frame_view` snapshots (wrapping the whole render in the lock made
+  the JC slow, 46 ms) (`0471ddb`).
+- Periodic scanning (hold 2 s), scans no longer hold the display lock, draw
+  task self-wakes every 40 ms (`d48d67b`).
+- Key task (15 ms poll, 120 ms release debounce) fixes holds read as taps and
+  accidental mode switches; hold bar (2 px) shows when to let go; touch
+  halves swapped; T-Display touch pads removed (`726dd0e`, `2a87748`).
+- Phosphor rework after "the glow looks like 3–4 fps": the JC redrew at
+  ~20 fps all along; each burst only added ~4 % light in column-wide steps.
+  Now: bin interpolation, sub-pixel tops, 3×3 blur, 60 ms easing; themes fade
+  into black at their faint end (`LUT_RAMP`). A bright "live trace" line was
+  tried first and rejected by the owner (looked odd).
+- JC3248 frame rate: smooth phosphor ~17 fps → double-buffered sending task
+  ~20 → 64-byte cache lines ~22 (`76e6030`).
+- Long holds swapped (next-page key: scan/zero/clear; mode key: theme /
+  unzero); Night theme tints the whole screen red.
+
+## 2026-10-23 — English UI, 120 MHz, listening time, v1.1.0
+
+- Vendor package (JC3248W535EN) reviewed: demos use QIO flash + octal PSRAM
+  at 120 MHz; LCD 50 MHz in their code is effectively 40 (divider from
+  80 MHz); TE pin GPIO38; full AXS15231B init sequence. Adopted 120 MHz
+  (`IDF_EXPERIMENTAL_FEATURES`, flash 120 MHz + HPM + DC-aware bootloader).
+  IDF's PSRAM temperature re-tuning refuses the Boya flash → left off.
+  Effect ~22 → ~25 fps. Side effect found: after a software restart the USB
+  serial port can stay silent until replug (board keeps running); first
+  misread as a boot hang.
+- Sending pauses between chunks while a capture waits → captures 25 → 49/s.
+- Waterfall one row per drawn frame on the JC (by the clock, scrolling
+  looked wavy).
+- BLE list stalled after ~1 min ("0 active, 64 total"): restarting the scan
+  every 300 ms; now one continuous scan, 8 s silence restarts the stack.
+- Whole UI translated to English (`4b7e59f`).
+- Phosphor strip under the channel bars on the JC (room left by the 135 px
+  layout scaled ×2) (`17c2e69`).
+- Listening time: profiling showed the analysis took ~12 ms but each capture
+  waited up to 17 ms for `ui_lock` held by the phosphor fade (and preempted
+  by the sending task). Fade moved out of the lock, lock held at raised
+  priority → JC 48 → 74 captures/s. zb_analyze ~22 % faster (DC/clip from
+  every 4th sample, band power from the power array, noise median from every
+  other bin, bit reversal by table). JC captures 0.1 → 0.2 ms. Result: JC
+  4.8 → 9 ms listening per second at ~24 fps; T-Display ~33 → 46
+  captures/s (`17c2e69`, `dac0b2e`).
+- Waterfall channel dots removed (became visible with fade-to-black);
+  BEARING averages by time (0.6 s, trend vs 3 s); DETECTOR rows by time
+  (40 ms) — per run the JC's ~260 runs/s left rows mostly empty
+  (`8ca49af`, `e9e7a4f`).
+- Release v1.1.0 with extended changelog (tag moved to `e9e7a4f`).
+- `TDSPINOISE` measures display traffic during captures (see CLAUDE.md
+  "hard-won facts") (`fac3490`).
+- Rejected after measurement: skipping "empty" FFT segments by time-domain
+  power (`TDSKIP`, not committed): ~85 % of segments are empty, but the
+  cheap test missed 28–55 % of busy ones (mostly narrow/weak signals).
+- Discussed: 40 MS/s for the whole band is a zero-sum game (two windows);
+  useful only for a single channel → FOCUS CHANNEL.
+- FOCUS CHANNEL (branch `focus-channel`, built, **not yet tested on
+  hardware**): one Wi-Fi channel at 40 MS/s or one BLE/Zigbee channel at
+  16 MS/s (2×/5× listening per capture, finer bins), airtime/level/floor,
+  phosphor and occupancy waterfall of the span; keys step targets.
+  `TDRATE 0|1|6` checks a sample rate against the 2440 MHz crystal
+  harmonic; `TDFOCUS?` / `TDFOCUS n`.
+- Comparison with a Raspberry Pi + RTL-SDR (owner's use case: spotting
+  phones, watches, earbuds in exams): a standard RTL-SDR does not reach
+  2.4 GHz and sees ~2.4 MHz at a time; a HackRF covers 5 GHz/cellular with
+  20 MHz gapless but is not a handheld. Our gaps: 5 GHz Wi-Fi and cellular
+  (LTE watches), devices in airplane mode.
+- Development continues on a Mac: CLAUDE.md, HISTORY.md (this file) and
+  BACKLOG.md added.
