@@ -177,3 +177,36 @@ this repository unless noted.
 - macOS: opening the serial port resets both boards even with DTR/RTS off
   (pyserial); the T-Display's boot log (115200) then reads as zero bytes at
   2 Mbaud — strip them before parsing.
+
+## 2026-10-23 — FOCUS split into three pages
+
+- FOCUS CHANNEL → FOCUS WIFI / FOCUS BLE / FOCUS ZIGBEE (sniffer pages 4–6,
+  BLE LIST now 7). Owner: stepping through all 32 targets was tedious. Each
+  page keeps its channel in NVS (`fo_ch`, written 2 s after the last step);
+  first start: Wi-Fi = strongest network's channel, BLE 38, Zigbee 15.
+  `TDFOCUS n` keeps its numbering, stores the channel and goes to the page.
+- A held key keeps stepping once a second on the FOCUS pages and on LEVEL
+  WIFI SINGLE; the hold bar fills again for each step.
+- `TDSPAN d lo bw n` (noise floor shape across the span, min per bin over n
+  captures, 2 MHz slices) measured the analog filter at 40 MS/s, LO 2442:
+
+  | filter | T-Display: channel edge / span edge | JC3248 |
+  |---|---|---|
+  | 20 MHz (old) | −3…−4 / −11…−13 dB | −2.5…−4 / −10…−12 dB |
+  | 38 MHz (new) | ~−1.5 / −0.7…−1 dB | ~−2 / −2.4…−3.7 dB |
+
+  48 MHz is worse on the T-Display (aliasing above the 40 MS/s Nyquist
+  band). 16 MS/s with 15 MHz: flat within ±1 dB (T-Display), ±1.6 dB (JC).
+- Wi-Fi gap in the middle of the span: the LO cannot be moved off the
+  channel (a Wi-Fi signal is ~±8.5 MHz, the usable span ±16.8 MHz), so the
+  ~0.8 MHz the analysis blanks around DC (and crystal harmonics) is drawn
+  from the left neighbour column in phosphor and waterfall. Airtime leaves
+  those bins out, as before.
+- Rejected: FOCUS WIFI stepping through network names. FOCUS sees energy,
+  not senders; per-network level is LEVEL WIFI SINGLE.
+- Listening unchanged on both boards (T-Display Wi-Fi 9.0–9.4, BLE/Zigbee
+  22.5–23 ms/s; JC Wi-Fi 6 19.4–19.8, Wi-Fi 11 18.5–19.0 at 40–66 %
+  airtime, BLE/Zigbee 49.4 ms/s). Display checked by the owner on both.
+- The JC3248 link failed once ("S3 RF ring overlaps BSS") from two 1 KB
+  static arrays in `TDSPAN`; moved to `UI_BSS`. 432 bytes of internal BSS
+  are left (CLAUDE.md).

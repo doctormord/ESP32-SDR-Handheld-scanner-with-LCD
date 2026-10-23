@@ -5,18 +5,9 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- **FOCUS (branch `focus-channel`): three pages.** Rates and listening time
-  are measured on both boards (HISTORY 2026-10-23). Open:
-  1. Wi-Fi gap in the middle of the span: measure the floor across the span
-     with the LO off the channel centre (20 MHz analog filter rolloff); if
-     flat enough, tune Wi-Fi ~6 MHz off like BLE/Zigbee.
-  2. Split FOCUS CHANNEL into FOCUS WIFI (1–13) / FOCUS BLE (37–39) /
-     FOCUS ZIGBEE (11–26) at its place in the sniffer pages; channel per page
-     in NVS (first start: Wi-Fi = strongest network's channel, BLE 38,
-     Zigbee 15); a held key steps once per second; `TDFOCUS n` keeps its
-     numbering.
-  3. Check both boards, README (FOCUS section with the measured numbers),
-     merge to `main`, rebuild `firmware/*.bin`, release v1.2.0.
+- **FOCUS pages (branch `focus-channel`): release.** Three pages, tested on
+  both boards (HISTORY 2026-10-23). Open: merge to `main`, rebuild
+  `firmware/*.bin`, release v1.2.0.
 - JC3248: carrier at 2448.0 MHz (51 × 48 MHz, USB?) — confirm the source
   (e.g. powered from a USB charger, serial off) and blank it like the
   crystal harmonics if it matters.
