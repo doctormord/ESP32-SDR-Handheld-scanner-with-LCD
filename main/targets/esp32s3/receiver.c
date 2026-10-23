@@ -424,16 +424,26 @@ int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels) {
         scan_phase_us[0] = (unsigned)(esp_timer_get_time() - t0);
         t0 = esp_timer_get_time();
         found = 0;
+        unsigned cal_mhz = frequency_mhz; /* where the receiver is calibrated now */
         for (unsigned g = 0; g < sizeof(groups) / sizeof(groups[0]) && found < max; g++) {
             uint16_t mask = 0;
-            for (unsigned c = groups[g].first; c <= groups[g].last; c++) mask |= channels & (1u << c);
+            bool need = false; /* below the calibration, or more than 40 MHz above */
+            for (unsigned c = groups[g].first; c <= groups[g].last; c++)
+                if (channels & (1u << c)) {
+                    const unsigned f = c == 14 ? 2484u : 2407u + 5 * c;
+                    mask |= 1u << c;
+                    if (f + 5 < cal_mhz || f > cal_mhz + 40) need = true;
+                }
             if (!mask) continue;
-            esp_wifi_set_mode(WIFI_MODE_NULL);
-            esp_wifi_set_promiscuous(true);
-            cal_elsewhere = true;
-            s3_tune(2407 + 5 * groups[g].first);
-            cal_elsewhere = true;
-            rx_lo_select(false);
+            if (need) { /* skipped when the present calibration covers them: faster */
+                esp_wifi_set_mode(WIFI_MODE_NULL);
+                esp_wifi_set_promiscuous(true);
+                cal_elsewhere = true;
+                cal_mhz = 2407 + 5 * groups[g].first;
+                s3_tune(cal_mhz);
+                cal_elsewhere = true;
+                rx_lo_select(false);
+            }
             esp_wifi_set_promiscuous(false);
             if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) break;
             wifi_scan_config_t scan = {
