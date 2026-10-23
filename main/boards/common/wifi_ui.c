@@ -2023,7 +2023,7 @@ void board_ui_init(void) {
     det_init();
     lcd_lock = xSemaphoreCreateMutex();
 #ifdef UI_TASK_CAPS
-    xTaskCreatePinnedToCoreWithCaps(draw_loop, "draw", 4096, NULL, 2, &draw_task, 0, UI_TASK_CAPS);
+    xTaskCreatePinnedToCoreWithCaps(draw_loop, "draw", 4096, NULL, 2, &draw_task, DRAW_CORE, UI_TASK_CAPS);
 #else
     xTaskCreatePinnedToCore(draw_loop, "draw", 4096, NULL, 2, &draw_task, DRAW_CORE);
 #endif

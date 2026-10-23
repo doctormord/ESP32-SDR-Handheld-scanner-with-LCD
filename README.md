@@ -455,6 +455,10 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
 - Display AXS15231B, 320×480 portrait, on QSPI (SPI2): CS 45, SCK 47,
   D0–D3 = 21/48/40/39, backlight 1. It runs at 40 MHz because the pins go
   through the GPIO matrix; 80 MHz showed scan lines.
+- Runs on both cores: core 0 measures, core 1 draws the next picture into the
+  PSRAM frame meanwhile; only sending it waits for a capture. (ESP-SDR's
+  bare-metal core-1 helper for SPEC streaming to a host is off then; SPEC
+  streaming runs on one core.)
 - Partial updates: the frame goes out in 40 chunks of 12 panel rows (each a
   12-pixel-wide vertical slice of the landscape picture); chunks that did not
   change since they were last sent are skipped, the rest go out behind a row
