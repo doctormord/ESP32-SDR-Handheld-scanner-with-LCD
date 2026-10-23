@@ -470,7 +470,9 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
 - Runs on both cores: core 0 measures, core 1 draws the next picture into one
   of two PSRAM frames while the other one is being sent (a task of its own,
   which pauses between two chunks whenever a capture waits); about 25
-  frames/s and 49 captures/s on WATERFALL FULL. The data
+  frames/s on WATERFALL FULL, with 45 captures/s of 0.2 ms each (the
+  T-Display takes 0.1 ms ones). The phosphor fades outside the lock the
+  measurement shares with drawing, so the measurement never waits for it. The data
   cache uses 64-byte lines (`sdkconfig.defaults.jc3248`): drawing into PSRAM
   and reading it back across rows for the panel misses half as often. (ESP-SDR's
   bare-metal core-1 helper for SPEC streaming to a host is off then; SPEC
