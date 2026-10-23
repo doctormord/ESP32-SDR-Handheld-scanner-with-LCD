@@ -155,13 +155,16 @@ static void unlock_ui(void) { if (ui_lock) xSemaphoreGive(ui_lock); }
 /* Set while a capture waits for the display lock: background sending pauses
  * between two chunks for it (TD_LCD_ASYNC). */
 static volatile bool capture_waiting;
-static const uint32_t *quiet_capture_n(unsigned n) {
+static const uint32_t *quiet_capture_div(unsigned n, unsigned divider);
+static const uint32_t *quiet_capture_n(unsigned n) { return quiet_capture_div(n, 0); }
+/* divider: 0 = 80 MS/s, 1 = 40 MS/s, 6 = 16 MS/s (native dump clocks). */
+static const uint32_t *quiet_capture_div(unsigned n, unsigned divider) {
     capture_waiting = true;
     lock_lcd();
     capture_waiting = false;
     td_lcd_idle();
     const int64_t tc = esp_timer_get_time();
-    const uint32_t *iq = sdr_local_capture(n, 0);
+    const uint32_t *iq = sdr_local_capture(n, divider);
     cap_us = (unsigned)(esp_timer_get_time() - tc);
     unlock_lcd();
     return iq;
@@ -435,10 +438,29 @@ static void wf_layout(void) {
  * from its level down, everything fades. The usual level glows hot, rare
  * bursts stay faint. A clipping capture is drawn only within 12 dB of its
  * peak: the rest is distortion. */
+/* Which FFT bin each phosphor column shows: the survey's 80 MS/s span
+ * (col_*), or FOCUS's narrower one. shift moves the survey map to another
+ * LO; f_lo..f_hi limits the columns (survey map only); base is the floor the
+ * levels count from. */
+typedef struct {
+    const float *kf;
+    const int16_t *k0, *k1;
+    const bool *spur;
+    int shift;
+    float f_lo, f_hi, base;
+} glow_map_t;
+static void glow_feed(float off, bool clipped, unsigned lo, const glow_map_t *g);
+
 /* The capture was taken at lo and lights the columns from f_lo to f_hi MHz
  * (ZIGBEE alternates two windows, each one lights its half). */
 static void glow_add(float off, bool clipped, unsigned lo, float f_lo, float f_hi) {
-    if (!glow || ref < -150) return;
+    const glow_map_t g = {col_kf, col_k0, col_k1, col_spur,
+                          (int)lroundf(((float)LO_C - (float)lo) / (80.0f / ZB_FFT_N)), f_lo, f_hi, ref};
+    glow_feed(off, clipped, lo, &g);
+}
+
+static void glow_feed(float off, bool clipped, unsigned lo, const glow_map_t *g) {
+    if (!glow || g->base < -150) return;
     /* Fill per capture = steady level * (time since the last one at this
      * LO) / fade time. */
     static int64_t last[2];
@@ -448,7 +470,7 @@ static void glow_add(float off, bool clipped, unsigned lo, float f_lo, float f_h
     const int64_t now = esp_timer_get_time();
     float dt = last[slot] ? (now - last[slot]) * 1e-6f : 0.04f;
     last[slot] = now;
-    const int shift = (int)lroundf(((float)LO_C - (float)lo) / (80.0f / ZB_FFT_N)); /* bins */
+    const int shift = g->shift;
     if (dt > 0.2f) dt = 0.2f;
     int fill = (int)(GLOW_STEADY * dt / GLOW_TAU_S + 0.5f);
     if (fill < 1) fill = 1;
@@ -457,25 +479,27 @@ static void glow_add(float off, bool clipped, unsigned lo, float f_lo, float f_h
     const float lim = clipped ? top - 12 : -150;
     float prev = -200;
     for (int x = 0; x < UW; x++) {
-        const float f = col_mhz(x);
-        if (f < f_lo || f >= f_hi) continue;
+        if (g->f_lo > 0) {
+            const float f = col_mhz(x);
+            if (f < g->f_lo || f >= g->f_hi) continue;
+        }
         float m = -200;
-        if (col_spur[x] && !shift) m = prev;
+        if (g->spur && g->spur[x] && !shift) m = prev;
         else {
             /* Between the two nearest bins (no steps a bin wide), and the
              * peak of any bin wholly inside a wide column. */
-            const float kf = col_kf[x] + shift;
+            const float kf = g->kf[x] + shift;
             const int k = (int)floorf(kf);
             const float a = k >= 0 && k < ZB_FFT_N ? spec_tmp[k] : -200;
             const float b = k + 1 >= 0 && k + 1 < ZB_FFT_N ? spec_tmp[k + 1] : -200;
             const float t = kf - k;
             m = a < -150 ? b : b < -150 ? a : a + t * (b - a);
-            for (int j = col_k0[x] + 1 + shift; j < col_k1[x] + shift; j++)
+            for (int j = g->k0[x] + 1 + shift; j < g->k1[x] + shift; j++)
                 if (j >= 0 && j < ZB_FFT_N && spec_tmp[j] > m) m = spec_tmp[j];
         }
         prev = m;
         if (m < -150 || m < lim) continue;
-        const float lvl = m - off - ref - GLOW_BASE_DB;
+        const float lvl = m - off - g->base - GLOW_BASE_DB;
         if (lvl <= 0) continue;
         float hf = lvl * GLOW_H / GLOW_DB;
         if (hf > GLOW_H) hf = GLOW_H;
@@ -1273,9 +1297,10 @@ static void error_strip(uint16_t *s, int y0, int h) {
 #define SN_METER_DB 40.0f      /* full scale of bars and history */
 #define SN_ADV_HIST P(136)
 
-enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_BLIST, SN_PAGES };
+enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_FOCUS, SN_PAGE_BLIST, SN_PAGES };
 static const char *const sn_page_name[SN_PAGES] = {"FINDER WIDEBAND", "DETECTOR PEAKS", "BEARING STRONGEST",
-                                                   "BLE LIST"};
+                                                   "FOCUS CHANNEL", "BLE LIST"};
+static void focus_enter(void);
 enum { SN_IDLE, SN_LEARN, SN_VERIFY };
 static bool sniffer;
 static int sn_page, sn_state;
@@ -1363,6 +1388,7 @@ static void sn_goto(int p) {
     if (p != SN_PAGE_BLIST && ble) reboot_to(SDR_BOOT_SNIFFER, (unsigned)p, "starting receiver ...");
     sn_page = p;
     if (sn_page == SN_PAGE_PEIL) sn_best = 0;
+    if (sn_page == SN_PAGE_FOCUS) focus_enter();
 }
 
 static void sn_next_page(void) {
@@ -2006,6 +2032,206 @@ static void bl_step(void) {
     else if (bl_n < 0) bl_n = 0;
 }
 
+/* ---- sniffer page: FOCUS CHANNEL --------------------------------------------- */
+/* One channel at a lower sample rate: the analysis costs the same per sample,
+ * so a capture of the same length in samples listens longer. A Wi-Fi
+ * channel (20 MHz) at 40 MS/s hears twice as long as the survey; a BLE
+ * advertising or Zigbee channel (2 MHz) at 16 MS/s five times as long, with
+ * 0.06 MHz bins in which a narrow signal stands further out of the noise.
+ * Rates are the receiver's own dump clocks (TDRATE checks them). Shows the
+ * channel's airtime and level, a phosphor and an occupancy waterfall of the
+ * span, the target between two marks. Holding the keys steps through the
+ * targets: Wi-Fi 1-13, BLE 37-39, Zigbee 11-26. */
+#define FO_TARGETS (13 + 3 + 16)
+#define FO_BIG_Y (HDR_H + P(4))
+#define FO_GLOW_Y (HDR_H + P(38))
+#define FO_GLOW_H P(26)
+#define FO_WF_Y (FO_GLOW_Y + FO_GLOW_H + 1)
+#define FO_AXIS_Y (H - P(10))
+#define FO_ROWS (FO_AXIS_Y - FO_WF_Y)
+#define FO_AIR_S 1.0f      /* airtime averaging */
+#define FO_LVL_S 0.6f      /* level averaging */
+static int fo_target = 5;  /* Wi-Fi 6 */
+static char fo_name[24];
+static float fo_mhz, fo_half;
+static unsigned fo_div, fo_msps, fo_lo;
+static float fo_ref = -200, fo_air, fo_lvl, fo_floor;
+static unsigned fo_caps, fo_caps_ps;
+static int64_t fo_caps_at, fo_last;
+static int fo_head;
+UI_BSS static float fo_kf[UW];
+UI_BSS static int16_t fo_k[UW];
+static float fv_fo_air, fv_fo_lvl, fv_fo_floor, fv_fo_ref;
+static unsigned fv_fo_caps_ps;
+static int fv_fo_head;
+
+static void focus_layout(void) {
+    const int t = fo_target;
+    if (t < 13) {
+        snprintf(fo_name, sizeof(fo_name), "WIFI %d", t + 1);
+        fo_mhz = wifi_mhz(t + 1);
+        fo_half = 9;
+        fo_div = 1;
+        fo_msps = 40;
+    } else {
+        static const float ble[3] = {2402, 2426, 2480};
+        if (t < 16) {
+            snprintf(fo_name, sizeof(fo_name), "BLE %d", 37 + t - 13);
+            fo_mhz = ble[t - 13];
+        } else {
+            snprintf(fo_name, sizeof(fo_name), "ZIGBEE %d", 11 + t - 16);
+            fo_mhz = 2405 + 5 * (t - 16);
+        }
+        fo_half = 1;
+        fo_div = 6;
+        fo_msps = 16;
+    }
+    /* A 2 MHz channel sits 3 MHz off the LO, clear of its DC bins. */
+    fo_lo = fo_msps == 16 ? (unsigned)(fo_mhz + (fo_mhz < 2470 ? 3 : -3)) : (unsigned)fo_mhz;
+    const float bin = (float)fo_msps / ZB_FFT_N, span = 0.84f * fo_msps;
+    for (int x = 0; x < UW; x++) {
+        const float f = fo_lo - span / 2 + (x + 0.5f) * span / UW;
+        fo_kf[x] = (f - fo_lo) / bin + ZB_FFT_N / 2;
+        int k = (int)floorf(fo_kf[x] + 0.5f);
+        fo_k[x] = (int16_t)(k < 0 ? 0 : k >= ZB_FFT_N ? ZB_FFT_N - 1 : k);
+    }
+}
+static int fo_col(float mhz) {
+    const float span = 0.84f * fo_msps;
+    return (int)((mhz - (fo_lo - span / 2)) * UW / span);
+}
+
+static void focus_enter(void) {
+    lock_ui();
+    focus_layout();
+    fo_ref = -200;
+    fo_air = fo_lvl = 0;
+    fo_last = 0;
+    if (glow) memset(glow, 0, (size_t)GLOW_H * UW);
+    if (glow_disp) memset(glow_disp, 0, (size_t)GLOW_H * UW);
+    if (wf) memset(wf, 0, (size_t)WF_ROWS * UW);
+    fo_head = 0;
+    memset(occ_cnt, 0, sizeof(occ_cnt));
+    zb_occ_segments = 0;
+    unlock_ui();
+}
+
+static void focus_pick(int step) {
+    fo_target = (fo_target + step + FO_TARGETS) % FO_TARGETS;
+    focus_enter();
+}
+
+static void focus_step(void) {
+    sdr_local_set_bandwidth(fo_msps == 40 ? 20 : 15);
+    sdr_local_set_gain(-1);
+    sdr_local_tune(fo_lo);
+    const uint32_t *iq = quiet_capture_div(CAP_N, fo_div);
+    const float band_mhz[1] = {fo_mhz};
+    const float busy_db = fo_ref < -150 ? -200 : fo_ref + DETECT_DB;
+    zb_result_t r;
+    if (!iq || !zb_analyze(iq, CAP_N, fo_msps, fo_lo, band_mhz, 1, fo_half, busy_db, &r)) return;
+    lock_ui();
+    caps++;
+    const int64_t now = esp_timer_get_time();
+    const float dt = fo_last ? (now - fo_last) * 1e-6f : 0;
+    fo_last = now;
+    if (!r.clip) {
+        if (fo_ref < -150) fo_ref = r.floor;
+        else if (r.floor < fo_ref) fo_ref += 0.2f * (r.floor - fo_ref);
+        else fo_ref += 0.01f * (r.floor - fo_ref);
+    }
+    fo_floor = r.floor;
+    if (fo_ref > -150 && r.peak[0] > -150) {
+        fo_air += (1 - expf(-dt / FO_AIR_S)) * (r.busy[0] - fo_air);
+        fo_lvl += (1 - expf(-dt / FO_LVL_S)) * (r.peak[0] - fo_ref - fo_lvl);
+    }
+    const glow_map_t g = {fo_kf, fo_k, fo_k, NULL, 0, -1, 0, fo_ref};
+    glow_feed(0, r.clip, fo_lo, &g);
+    fo_caps++;
+    if (now - fo_caps_at >= 1000000) {
+        fo_caps_ps = (unsigned)(fo_caps * 1000000LL / (now - fo_caps_at));
+        fo_caps = 0;
+        fo_caps_at = now;
+    }
+    unlock_ui();
+}
+
+/* One occupancy row, as in the survey waterfall. Caller holds ui_lock. */
+static void focus_push_row(void) {
+    if (!wf) return;
+    const uint8_t *prev = wf + fo_head * UW;
+    fo_head = (fo_head + 1) % WF_ROWS;
+    uint8_t *row = wf + fo_head * UW;
+    const float segs = zb_occ_segments ? (float)zb_occ_segments : 1;
+    for (int x = 0; x < UW; x++) {
+        const unsigned m = occ_cnt[fo_k[x]];
+        new_row[x] = m ? sqrtf(m / segs) * 255 : 0;
+    }
+    soften_row(row, prev, new_row);
+    memset(occ_cnt, 0, sizeof(occ_cnt));
+    zb_occ_segments = 0;
+}
+
+static void focus_view(void) {
+    fv_fo_air = fo_air;
+    fv_fo_lvl = fo_lvl;
+    fv_fo_floor = fo_floor;
+    fv_fo_ref = fo_ref;
+    fv_fo_caps_ps = fo_caps_ps;
+    fv_fo_head = fo_head;
+}
+
+static void focus_strip(uint16_t *s, int y0, int h) {
+    sv_fill(s, W, h, C_BLACK);
+    char t[40], pg[24];
+    if (y0 < HDR_H) {
+        const bool note = esp_timer_get_time() < theme_note_until;
+        if (note) snprintf(t, sizeof(t), "Theme: %s", themes[theme].name);
+        else snprintf(t, sizeof(t), "%s  %u MS/s", fo_name, fo_msps);
+        snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
+        header_row(s, y0, h, "FOCUS", t, note ? C_YELLOW : C_CYAN, pg, C_DIM, NULL);
+    }
+    if (y0 < FO_GLOW_Y && y0 + h > HDR_H) {
+        /* Big number: the channel's airtime. */
+        const float air = fv_fo_air < 0 ? 0 : fv_fo_air;
+        snprintf(t, sizeof(t), "%u", (unsigned)(air * 100 + 0.5f));
+        const int nw = big_text(s, y0, h, P(4), FO_BIG_Y, t, air_colour(air));
+        text(s, y0, h, P(8) + nw, FO_BIG_Y + P(15), "% airtime", C_DIM, 1);
+        const int tx = UW / 2 + P(10);
+        if (fv_fo_ref > -150) snprintf(t, sizeof(t), "level %+.0f dB", fv_fo_lvl);
+        else snprintf(t, sizeof(t), "level --");
+        text(s, y0, h, tx, FO_BIG_Y, t, C_TEXT, 1);
+        snprintf(t, sizeof(t), "floor %.0f dB", fv_fo_floor);
+        text(s, y0, h, tx, FO_BIG_Y + P(11), t, C_DIM, 1);
+        /* Listening time: captures per second x their length. */
+        snprintf(t, sizeof(t), "listen %.1f ms/s", fv_fo_caps_ps * (float)CAP_N / (fo_msps * 1000.0f));
+        text(s, y0, h, tx, FO_BIG_Y + P(22), t, C_GREEN, 1);
+    }
+    glow_rows(s, y0, h, FO_GLOW_Y, FO_GLOW_H);
+    if (y0 <= FO_WF_Y - 1 && y0 + h > FO_WF_Y - 1) rect(s, y0, h, 0, FO_WF_Y - 1, UW, 1, C_BAR);
+    for (int y = y0 > FO_WF_Y ? y0 : FO_WF_Y; y < y0 + h && y < FO_AXIS_Y; y++) {
+        const uint8_t *src = wf + ((fv_fo_head - (y - FO_WF_Y) + WF_ROWS) % WF_ROWS) * UW;
+        uint16_t *row = s + (y - y0) * W;
+        for (int x = 0; x < UW; x++) row[x] = src[x] ? lut[src[x]] : C_BLACK;
+    }
+    /* The target channel between two marks, over phosphor and waterfall. */
+    const int xa = fo_col(fo_mhz - fo_half), xb = fo_col(fo_mhz + fo_half);
+    for (int y = y0 > FO_GLOW_Y ? y0 : FO_GLOW_Y; y < y0 + h && y < FO_AXIS_Y; y += 1) {
+        if ((y / UI_SCALE & 3) != 0) continue;
+        uint16_t *row = s + (y - y0) * W;
+        if (xa >= 0 && xa < UW) row[xa] = C_CYAN;
+        if (xb >= 0 && xb < UW) row[xb] = C_CYAN;
+    }
+    if (y0 + h > FO_AXIS_Y) {
+        const float span = 0.84f * fo_msps;
+        snprintf(t, sizeof(t), "%.0f", fo_lo - span / 2);
+        text(s, y0, h, P(2), FO_AXIS_Y + P(1), t, C_DIM, 1);
+        snprintf(t, sizeof(t), "%.0f", fo_lo + span / 2);
+        text(s, y0, h, UW - P(2) - text_w(t, 1), FO_AXIS_Y + P(1), t, C_DIM, 1);
+        text_c(s, y0, h, (xa + xb) / 2, FO_AXIS_Y + P(1), fo_name, C_CYAN, 1);
+    }
+}
+
 /* ---- drawing task ---------------------------------------------------------- */
 
 /* Under ui_lock, once per frame: what the strips below show. */
@@ -2030,12 +2256,14 @@ static void frame_view(void) {
     fv_det_best = det_best;
     fv_det_hits = det_hits;
     fv_det_wf_head = det_wf_head;
+    focus_view();
 }
 
 /* One waterfall row; DETECTOR writes its own rows (one per run) into wf.
  * Caller holds ui_lock. */
 static void push_row(int64_t now) {
     if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_DET)) {}
+    else if (sniffer && sn_page == SN_PAGE_FOCUS) focus_push_row();
     else if (sniffer) sn_push_row(now);
     else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
 }
@@ -2064,7 +2292,8 @@ static void draw_frame(void) {
     vTaskPrioritySet(NULL, prio);
     if (sniffer && sn_page == SN_PAGE_BLIST) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
-                        : sn_page == SN_PAGE_DET ? det_strip : sn_peil_strip, 0, H);
+                        : sn_page == SN_PAGE_DET ? det_strip
+                        : sn_page == SN_PAGE_FOCUS ? focus_strip : sn_peil_strip, 0, H);
     else switch (page) {
     case PAGE_WF: render(wf_strip, 0, H); break;
     case PAGE_NETS: render(nets_strip, 0, H); break;
@@ -2195,8 +2424,11 @@ static void keys_loop(void *arg) {
  * scanning on/off (only where the scan mode shows). */
 static bool two_step_hold(void) { return !sniffer && (page == PAGE_WF || page == PAGE_CHAN); }
 
+static void focus_pick(int step);
 static void key_long(int i, int64_t now) {
-    if (!i && sniffer && (sn_page == SN_PAGE_DET)) {
+    if (sniffer && sn_page == SN_PAGE_FOCUS) {
+        focus_pick(i ? 1 : -1); /* next-page key: next target, mode key: previous */
+    } else if (!i && sniffer && (sn_page == SN_PAGE_DET)) {
         det_state = SN_IDLE;
         det_based = false;
         det_meter = det_best = 0;
@@ -2665,6 +2897,43 @@ bool board_ui_command(const char *line) {
         burst_serial_send("OK\n", 3);
         return true;
     }
+    /* TDFOCUS? / TDFOCUS n: FOCUS CHANNEL state / choose target n (0-31:
+     * Wi-Fi 1-13, BLE 37-39, Zigbee 11-26). */
+    if (!strcmp(line, "TDFOCUS?")) {
+        char out[200];
+        const int m = snprintf(out, sizeof(out),
+                               "TDFOCUS target %d %s mhz %.0f lo %u msps %u caps/s %u listen %.1f ms/s air %.3f level %.1f floor %.1f ref %.1f\n",
+                               fo_target, fo_name, fo_mhz, fo_lo, fo_msps, fo_caps_ps,
+                               fo_caps_ps * (float)CAP_N / (fo_msps * 1000.0f), fo_air, fo_lvl, fo_floor, fo_ref);
+        burst_serial_send(out, m);
+        return true;
+    }
+    if (sscanf(line, "TDFOCUS %d", &p) == 1 && p >= 0 && p < FO_TARGETS) {
+        fo_target = p;
+        if (sniffer && sn_page == SN_PAGE_FOCUS) focus_enter();
+        burst_serial_send("OK\n", 3);
+        return true;
+    }
+    /* TDRATE d: checks a sample rate (d = 0 / 1 / 6: 80 / 40 / 16 MS/s)
+     * against the 40 MHz crystal's harmonic at 2440 MHz: at LO 2442 its
+     * strongest bin must sit 2.0 MHz below the LO if the rate is right. */
+    if (sscanf(line, "TDRATE %d", &p) == 1 && (p == 0 || p == 1 || p == 6)) {
+        const unsigned msps = p == 0 ? 80 : p == 1 ? 40 : 16;
+        lock_lcd();
+        td_lcd_idle();
+        sdr_local_set_bandwidth(p == 0 ? BW_80 : p == 1 ? 20 : 15);
+        sdr_local_set_gain(GAIN_REF);
+        sdr_local_tune(2442);
+        float over = 0, off = 0;
+        const uint32_t *iq = sdr_local_capture(CAP_N, (unsigned)p);
+        if (iq) off = zb_strongest_offset(iq, CAP_N, msps, &over);
+        unlock_lcd();
+        char out[120];
+        const int m = snprintf(out, sizeof(out), "TDRATE %u MS/s strongest %+.3f MHz (+%.1f dB over median), expected -2.000 %s\n",
+                               msps, off, over, iq ? "" : "(capture failed)");
+        burst_serial_send(out, m);
+        return true;
+    }
     if (sscanf(line, "TDPAGE %d", &p) == 1 && p >= 0 && p < PAGES) {
         set_page(p);
         hold_until = esp_timer_get_time() + HOLD_US;
@@ -2716,6 +2985,7 @@ bool board_ui_step(bool host_active) {
     if (!blist) sdr_local_set_bandwidth(BW_80);
     if (blist) bl_step();
     else if (sniffer && (sn_page == SN_PAGE_DET)) det_step(t0);
+    else if (sniffer && sn_page == SN_PAGE_FOCUS) focus_step();
     else if (sniffer) sn_dwell();
     else if (page == PAGE_ZB) zb_dwell();
     else if (cov_page) cov_step(t0);

@@ -47,3 +47,7 @@ bool zb_peak_spectrum(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo
 /* > 0: in each smoothing window a band counts as busy only within this many
  * dB of the strongest band (see zb.c); 0 = off. */
 extern float zb_dynamic_range_db;
+/* Diagnostics (TDRATE): offset in MHz from the LO of the strongest bin of
+ * the capture's average spectrum, taken as sampled at msps (bins within
+ * 0.5 MHz of DC skipped), and how far it stands over the median bin. */
+float zb_strongest_offset(const uint32_t *iq, unsigned n, unsigned msps, float *over_db);
