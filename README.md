@@ -469,7 +469,7 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
   through the GPIO matrix; 80 MHz showed scan lines.
 - Runs on both cores: core 0 measures, core 1 draws the next picture into one
   of two PSRAM frames while the other one is being sent (a task of its own,
-  which pauses between two chunks whenever a capture waits); about 25
+  which pauses between two chunks whenever a capture waits); about 24
   frames/s on WATERFALL FULL, with 45 captures/s of 0.2 ms each (the
   T-Display takes 0.1 ms ones). The phosphor fades outside the lock the
   measurement shares with drawing, so the measurement never waits for it. The data
