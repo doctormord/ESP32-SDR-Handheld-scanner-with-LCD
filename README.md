@@ -278,8 +278,9 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 | **Right** | survey ↔ sniffer | survey: full network scan now; kept held to 2 s: periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
 
 - **T-Display:** left = GPIO0 button, right = GPIO35 button.
-- **JC3248:** touch the left or right half of the screen. The BOOT button
-  works as the left button. A touch that drops out for less than 0.12 s
+- **JC3248:** touching the **right** half of the screen is the left button
+  (next page), the **left** half the right button (survey ↔ sniffer, scan,
+  zero). The BOOT button works as the left button. A touch that drops out for less than 0.12 s
   during a long hold still counts as held.
 - **Hold bar:** while a button is held, a bar along the foot of the title row
   fills green towards a red goal at the right; once it is all red the hold has

@@ -96,10 +96,15 @@
 #define LONG_US 1000000
 #define RELEASE_US 120000     /* a key counts as let go after this long without it */
 #define HOLD_SHOW_US 150000   /* the hold bar shows once a key is held this long */
-/* The key being held (or -1), since when, and how long its hold takes: drawn
- * as a bar in the title row (hold_bar), so one can see when to let go. */
-static int hold_key = -1;
-static int64_t hold_since, hold_span;
+/* Keys are read by a task of their own (keys_loop), every KEY_POLL_MS: the
+ * main loop is busy for a while in a scan or a detector run, and a hold that
+ * ended meanwhile used to look like a tap. keys_now is the debounced state;
+ * key_seq counts presses, key_down_at / key_up_at time the last one. The
+ * title row's hold bar reads the same, so it stops when the key is let go. */
+#define KEY_POLL_MS 15
+static volatile unsigned keys_now;
+static volatile unsigned key_seq[2];
+static volatile int64_t key_down_at[2], key_up_at[2];
 /* Automatic cycling, when on: the configured period, 12 s if that is 0. */
 #define PAGE_US ((CONFIG_ESP_SDR_PAGE_SECONDS ? CONFIG_ESP_SDR_PAGE_SECONDS : 12) * 1000000LL)
 
@@ -651,12 +656,44 @@ static int best_channel(void) {
 /* Title row of every page: the title on the left, the tag (page number) on
  * the right, the status right after the title, shortened rather than drawn
  * over the tag. Returns where the status ends and the room left after it. */
+/* Optional second status, right-aligned before the tag (set just before a
+ * header_row() call, which clears it). */
+static const char *header_mode;
+static uint16_t header_mode_c;
+
+static bool two_step_hold(void);
+/* Hold bar, two pixels along the top edge of the title row: fills green
+ * while a key is held, towards a red goal at the right end, and turns red
+ * once the hold has done its job (let go now). The right key in survey
+ * mode holds in two steps (1 s scan, 2 s periodic scanning): its bar runs
+ * over 2 s with a white mark at 1 s. */
+static void hold_bar(uint16_t *s, int y0, int h) {
+    const unsigned k = keys_now;
+    const int key = k & 2 ? 1 : k & 1 ? 0 : -1;
+    if (key < 0) return;
+    const int64_t held = esp_timer_get_time() - key_down_at[key];
+    const int64_t span = key == 1 && two_step_hold() ? 2 * LONG_US : LONG_US;
+    if (held < HOLD_SHOW_US) return;
+    const int gw = UW / 16;
+    int fill = (int)(held * UW / span);
+    if (fill > UW) fill = UW;
+    rect(s, y0, h, 0, 0, UW, 2, C_COL);
+    rect(s, y0, h, UW - gw, 0, gw, 2, RGB(120, 20, 20));
+    rect(s, y0, h, 0, 0, fill, 2, held >= span ? C_RED : C_GREEN);
+    if (span > LONG_US) rect(s, y0, h, (int)(LONG_US * UW / span), 0, 2, 3, C_WHITE);
+}
+
 static int header_row(uint16_t *s, int y0, int h, const char *title, const char *status, uint16_t sc,
                       const char *tag, uint16_t tc, int *room) {
     rect(s, y0, h, 0, 0, W, HDR_H, C_BAR);
     text(s, y0, h, P(2), P(1), title, C_YELLOW, 1);
-    const int tx = UW - P(2) - text_w(tag, 1);
+    int tx = UW - P(2) - text_w(tag, 1);
     text(s, y0, h, tx, P(1), tag, tc, 1);
+    if (header_mode) { /* its own place, right before the tag */
+        tx -= P(6) + text_w(header_mode, 1);
+        text(s, y0, h, tx, P(1), header_mode, header_mode_c, 1);
+        header_mode = NULL;
+    }
     const int x = P(2) + text_w(title, 1) + P(7);
     char b[48];
     snprintf(b, sizeof(b), "%s", status);
@@ -664,23 +701,9 @@ static int header_row(uint16_t *s, int y0, int h, const char *title, const char 
     if (b[0]) text(s, y0, h, x, P(1), b, sc, 1);
     const int end = x + text_w(b, 1);
     if (room) *room = tx - P(5) - end;
-    /* Hold bar along the foot of the title row: fills green while a key is
-     * held, towards a red goal at the right end; red all over once the hold
-     * has done its job (let go now). A two-step hold (right key in survey:
-     * 1 s scan, 2 s periodic scanning) has a white mark half way. */
-    const int64_t held = hold_key >= 0 ? esp_timer_get_time() - hold_since : 0;
-    if (held > HOLD_SHOW_US && hold_span > 0) {
-        const int by = HDR_H - P(2), bh = P(2), gw = UW / 16;
-        int fill = (int)(held * UW / hold_span);
-        if (fill > UW) fill = UW;
-        rect(s, y0, h, 0, by, UW, bh, C_COL);
-        rect(s, y0, h, UW - gw, by, gw, bh, RGB(120, 20, 20));
-        rect(s, y0, h, 0, by, fill, bh, held >= hold_span ? C_RED : C_GREEN);
-        if (hold_span > LONG_US) rect(s, y0, h, (int)(LONG_US * UW / hold_span), by - P(1), P(1), bh + P(1), C_WHITE);
-    }
+    hold_bar(s, y0, h);
     return end;
 }
-
 static void draw_header(uint16_t *s, int y0, int h) {
     if (y0 >= HDR_H) return;
     char t[40];
@@ -689,7 +712,12 @@ static void draw_header(uint16_t *s, int y0, int h) {
     if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
     else if (scanning) snprintf(t, sizeof(t), "scan..");
     else if (page == PAGE_ZB) t[0] = 0;
-    else snprintf(t, sizeof(t), scan_auto ? "%d Netze scan auto" : "%d Netze scan manual", ap_count < 0 ? 0 : ap_count);
+    else snprintf(t, sizeof(t), "%d Netze", ap_count < 0 ? 0 : ap_count);
+    /* Scan mode only where it can be chosen (NETZE always scans). */
+    if (page == PAGE_WF || page == PAGE_CHAN) {
+        header_mode = scan_auto ? "scan auto" : "scan manual";
+        header_mode_c = scan_auto ? C_GREEN : C_DIM;
+    }
     const bool clipping = !agc_mode && clip_rate > 0.3f;
     char pg[24];
     snprintf(pg, sizeof(pg), "%d/%d", page + 1, PAGES);
@@ -1981,84 +2009,120 @@ static void scan(void) {
 /* Left: tap next page (of the current mode), hold: automatic cycling on/off
  * (survey). Right: tap switches survey <-> sniffer; hold: full network scan
  * (survey) or zero the background (sniffer). */
-static void handle_keys(int64_t now) {
-    /* Touch can drop out for a moment during a long touch; a gap shorter
-     * than RELEASE_US is not a release (it used to count as a tap, and a
-     * tap on the right switches to the sniffer). */
-    static unsigned stable;
-    static int64_t gone_at[2];
-    const unsigned raw = td_keys();
-    for (int i = 0; i < 2; i++) {
-        const unsigned bit = 1u << i;
-        if (raw & bit) {stable |= bit; gone_at[i] = 0;}
-        else if (stable & bit) {
-            if (!gone_at[i]) gone_at[i] = now;
-            else if (now - gone_at[i] >= RELEASE_US) stable &= ~bit;
+static void keys_loop(void *arg) {
+    (void)arg;
+    int64_t gone_at[2] = {0, 0};
+    for (;;) {
+        const int64_t now = esp_timer_get_time();
+        const unsigned raw = td_keys();
+        unsigned k = keys_now;
+        for (int i = 0; i < 2; i++) {
+            const unsigned bit = 1u << i;
+            if (raw & bit) {
+                if (!(k & bit)) {
+                    key_down_at[i] = now;
+                    key_seq[i]++;
+                    k |= bit;
+                }
+                gone_at[i] = 0;
+            } else if (k & bit) {
+                /* Touch drops out for a moment during long touches: only a
+                 * gap of RELEASE_US is a release. */
+                if (!gone_at[i]) gone_at[i] = now;
+                else if (now - gone_at[i] >= RELEASE_US) {
+                    key_up_at[i] = gone_at[i];
+                    k &= ~bit;
+                }
+            }
         }
+        keys_now = k;
+        vTaskDelay(pdMS_TO_TICKS(KEY_POLL_MS));
     }
-    unsigned k = stable;
+}
+
+/* Right key held on in survey mode: 1 s one full scan, 2 s periodic
+ * scanning on/off (only where the scan mode shows). */
+static bool two_step_hold(void) { return !sniffer && (page == PAGE_WF || page == PAGE_CHAN); }
+
+static void key_long(int i, int64_t now) {
+    if (!i && sniffer && (sn_page == SN_PAGE_DET)) {
+        det_state = SN_IDLE;
+        det_based = false;
+        det_meter = det_best = 0;
+    } else if (!i && sniffer) {
+        sn_unzero();
+    } else if (!i && page == PAGE_COV) {
+        cov_pick(1);
+    } else if (!i) {
+        theme_next(now);
+    } else if (sniffer && sn_page == SN_PAGE_BLIST) {
+        sdr_local_ble_forget();
+    } else if (sniffer && (sn_page == SN_PAGE_DET)) {
+        det_zero_start(now);
+    } else if (sniffer) {
+        sn_null_start(now);
+    } else if (page == PAGE_COV) {
+        cov_pick(-1);
+    } else {
+        full_scan_pending = true;
+        next_scan_at = now; /* runs this step */
+    }
+}
+
+static void key_short(int i, int64_t now) {
+    if (splash_until) splash_until = 0;
+    else if (i) sn_enter(!sniffer);
+    else if (sniffer) sn_next_page();
+    else {
+        set_page(page + 1);
+        hold_until = now + HOLD_US;
+    }
+}
+
+/* Left: tap next page, hold: colour theme (survey) or the page's own choice.
+ * Right: tap survey <-> sniffer, hold: scan / zero. Holds are timed from the
+ * key task's press and release times, so they count even when this loop was
+ * busy while the key went down or up. */
+static void handle_keys(int64_t now) {
+    static unsigned seen[2];
+    static bool active[2];
+    const unsigned k = keys_now;
     for (int i = 0; i < 2; i++) {
-        const unsigned bit = 1u << i;
-        if ((k & bit) && !(held_prev & bit)) {
-            pressed_at[i] = now;
+        const bool held = k & (1u << i);
+        if (key_seq[i] != seen[i]) { /* a new press (maybe over already) */
+            seen[i] = key_seq[i];
+            pressed_at[i] = key_down_at[i];
             long_done[i] = long2_done[i] = false;
+            active[i] = true;
         }
-        /* Right held on in survey mode: at 2 s periodic scanning on/off. */
-        if ((k & bit) && i && long_done[i] && !long2_done[i] && now - pressed_at[i] > 2 * LONG_US && !sniffer &&
-            page != PAGE_COV) {
+        if (!active[i]) continue;
+        const int64_t dur = (held ? now : key_up_at[i]) - pressed_at[i];
+        if (!long_done[i] && dur > LONG_US) {
+            long_done[i] = true;
+            key_long(i, now);
+        }
+        if (i && long_done[i] && !long2_done[i] && dur > 2 * LONG_US && two_step_hold()) {
             long2_done[i] = true;
             scan_auto = !scan_auto;
             if (scan_auto) next_scan_at = now;
         }
-        if ((k & bit) && !long_done[i] && now - pressed_at[i] > LONG_US) {
-            long_done[i] = true;
-            if (!i && sniffer && (sn_page == SN_PAGE_DET)) {
-                det_state = SN_IDLE;
-                det_based = false;
-                det_meter = det_best = 0;
-            } else if (!i && sniffer) {
-                sn_unzero();
-            } else if (!i && page == PAGE_COV) {
-                cov_pick(1);
-            } else if (!i) {
-                theme_next(now);
-            } else if (sniffer && sn_page == SN_PAGE_BLIST) {
-                sdr_local_ble_forget();
-            } else if (sniffer && (sn_page == SN_PAGE_DET)) {
-                det_zero_start(now);
-            } else if (sniffer) {
-                sn_null_start(now);
-            } else if (page == PAGE_COV) {
-                cov_pick(-1);
-            } else {
-                full_scan_pending = true;
-                next_scan_at = now; /* runs this step */
-            }
-        }
-        if (!(k & bit) && (held_prev & bit) && !long_done[i]) {
-            if (splash_until) splash_until = 0;
-            else if (i) sn_enter(!sniffer);
-            else if (sniffer) sn_next_page();
-            else {
-                set_page(page + 1);
-                hold_until = now + HOLD_US;
-            }
+        if (!held) {
+            active[i] = false;
+            if (!long_done[i]) key_short(i, now);
         }
     }
     held_prev = k;
-    /* What the hold bar shows. */
-    hold_key = k & 2 ? 1 : k & 1 ? 0 : -1;
-    if (hold_key >= 0) {
-        hold_since = pressed_at[hold_key];
-        hold_span = hold_key == 1 && !sniffer && page != PAGE_COV ? 2 * LONG_US : LONG_US;
-    }
 }
-
 
 
 void board_ui_init(void) {
     td_lcd_init();
     td_io_init();
+#ifdef UI_TASK_CAPS
+    xTaskCreatePinnedToCoreWithCaps(keys_loop, "keys", 3072, NULL, 3, NULL, DRAW_CORE, UI_TASK_CAPS);
+#else
+    xTaskCreatePinnedToCore(keys_loop, "keys", 2560, NULL, 3, NULL, DRAW_CORE);
+#endif
     wf = calloc(WF_ROWS, UW);
     glow = calloc(GLOW_H, UW);
     bool ok = wf && glow && zb_init();
