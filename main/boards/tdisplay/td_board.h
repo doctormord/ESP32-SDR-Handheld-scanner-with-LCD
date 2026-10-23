@@ -37,6 +37,10 @@ bool td_lcd_has_frame(void);
 bool td_lcd_try_frame(size_t keep);
 void td_lcd_defer(bool on);
 #define TD_LCD_CAN_DEFER 1
+/* Diagnostics: display traffic during a capture (TDSPINOISE). */
+void td_lcd_noise_burst(void);
+void td_lcd_noise_settle(void);
+#define TD_LCD_NOISE_TEST 1
 
 /* Inputs. NEXT: button GPIO0 (left). SCAN: button GPIO35 (right). */
 enum { TD_NEXT = 1u << 0, TD_SCAN = 1u << 1 };

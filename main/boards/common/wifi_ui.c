@@ -2507,6 +2507,102 @@ bool board_ui_command(const char *line) {
         }
         return true;
     }
+#ifdef TD_LCD_NOISE_TEST
+    /* TDSPINOISE [n]: what display traffic during a capture costs. n pairs of
+     * captures at LO_C and a fixed gain, alternately with the bus quiet and
+     * while picture chunks go out; compares the floor, every bin of the
+     * max-hold spectrum (spurs) and the channels' levels and airtime. */
+    if (!strncmp(line, "TDSPINOISE", 10)) {
+        int n = 40;
+        if (line[10]) sscanf(line + 10, "%d", &n);
+        if (n < 2) n = 2;
+        if (n > 200) n = 200;
+        float (*sp)[ZB_FFT_N] = calloc(2, sizeof(*sp));
+        int (*spn)[ZB_FFT_N] = calloc(2, sizeof(*spn));
+        if (!sp || !spn) {
+            free(sp);
+            free(spn);
+            burst_serial_send("TDSPINOISE no memory\n", 21);
+            return true;
+        }
+        float fl[2] = {0}, pk[2][CHANNELS] = {{0}}, bz[2][CHANNELS] = {{0}};
+        int got[2] = {0}, clip[2] = {0};
+        const int gain = GAIN_REF;
+        lock_lcd();
+        td_lcd_idle();
+        sdr_local_tune(LO_C);
+        sdr_local_set_gain(gain);
+        zb_set_gain_comp(false);
+        const float off = gain_offset(gain);
+        const float busy_db = ref < -150 ? -200 : ref + off + DETECT_DB;
+        for (int i = 0; i < 2 * n; i++) {
+            const int busy = i & 1;
+            if (busy) td_lcd_noise_burst();
+            const uint32_t *iq = sdr_local_capture(CAP_N, 0);
+            zb_result_t r;
+            const bool ok = iq && zb_analyze(iq, CAP_N, 80, LO_C, band, CHANNELS, 8, busy_db, &r);
+            if (busy) td_lcd_noise_settle();
+            if (!ok) continue;
+            got[busy]++;
+            clip[busy] += r.clip;
+            fl[busy] += r.floor;
+            for (int c = 0; c < CHANNELS; c++) {pk[busy][c] += r.peak[c] < -150 ? 0 : r.peak[c]; bz[busy][c] += r.busy[c];}
+            for (int k = 0; k < ZB_FFT_N; k++)
+                if (spec_tmp[k] > -150) {sp[busy][k] += spec_tmp[k]; spn[busy][k]++;}
+        }
+        zb_set_gain_comp(agc_mode);
+        unlock_lcd();
+        char out[200];
+        int m;
+        if (!got[0] || !got[1]) {
+            free(sp);
+            free(spn);
+            burst_serial_send("TDSPINOISE failed\n", 18);
+            return true;
+        }
+        m = snprintf(out, sizeof(out), "TDSPINOISE pairs %d gain %d captures %d/%d clipped %d/%d\n", n, gain,
+                     got[0], got[1], clip[0], clip[1]);
+        burst_serial_send(out, m);
+        const float fq = fl[0] / got[0], fb = fl[1] / got[1];
+        m = snprintf(out, sizeof(out), "floor quiet %.2f busy %.2f delta %+.2f dB\n", fq, fb, fb - fq);
+        burst_serial_send(out, m);
+        /* Per bin: mean max-hold level, busy minus quiet. */
+        float d[ZB_FFT_N], sum = 0;
+        int bins = 0, over3 = 0, over6 = 0, over10 = 0;
+        for (int k = 0; k < ZB_FFT_N; k++) {
+            d[k] = -999;
+            if (!spn[0][k] || !spn[1][k]) continue;
+            d[k] = sp[1][k] / spn[1][k] - sp[0][k] / spn[0][k];
+            sum += d[k];
+            bins++;
+            over3 += d[k] > 3;
+            over6 += d[k] > 6;
+            over10 += d[k] > 10;
+        }
+        m = snprintf(out, sizeof(out), "spectrum mean delta %+.2f dB over %d bins; bins above +3 dB %d, +6 dB %d, +10 dB %d\n",
+                     bins ? sum / bins : 0, bins, over3, over6, over10);
+        burst_serial_send(out, m);
+        m = snprintf(out, sizeof(out), "top:");
+        for (int t = 0; t < 8; t++) {
+            int best = -1;
+            for (int k = 0; k < ZB_FFT_N; k++) if (d[k] > -999 && (best < 0 || d[k] > d[best])) best = k;
+            if (best < 0) break;
+            m += snprintf(out + m, sizeof(out) - m, " %.1fMHz %+.1f", LO_C + (best - ZB_FFT_N / 2) * 80.0f / ZB_FFT_N, d[best]);
+            d[best] = -999;
+        }
+        out[m++] = '\n';
+        burst_serial_send(out, m);
+        for (int c = 0; c < CHANNELS; c++) {
+            m = snprintf(out, sizeof(out), "ch %d peak quiet %.1f busy %.1f delta %+.1f  air quiet %.3f busy %.3f\n", c + 1,
+                         pk[0][c] / got[0], pk[1][c] / got[1], pk[1][c] / got[1] - pk[0][c] / got[0], bz[0][c] / got[0],
+                         bz[1][c] / got[1]);
+            burst_serial_send(out, m);
+        }
+        free(sp);
+        free(spn);
+        return true;
+    }
+#endif
 #ifdef TD_LCD_WINDOW_TEST
     /* TDLCDWIN: red 100 x 70 block at panel column 110, row 190 through the
      * window commands, held 6 s (drawing paused): in the middle = the panel
