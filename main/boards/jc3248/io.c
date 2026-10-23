@@ -2,7 +2,8 @@
  * address 0x3B) and the BOOT button (GPIO0). The touch read is the chip's
  * 11-byte request followed by 8 bytes: [1] points, [2..3] x, [4..5] y in
  * panel coordinates (portrait, 320x480). The left half of the landscape
- * picture acts as the left button, the right half as the right one. */
+ * picture is the SCAN key (survey <-> sniffer, scan, zero), the right half
+ * NEXT (next page, theme) like the BOOT button. */
 #include "td_board.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -51,7 +52,7 @@ static unsigned touch_keys(void) {
     /* Landscape x runs along the panel's long side (its y). */
     unsigned lx = last_y;
     if (ROTATE_180) lx = PANEL_H - 1 - lx;
-    return lx < PANEL_H / 2 ? TD_NEXT : TD_SCAN;
+    return lx < PANEL_H / 2 ? TD_SCAN : TD_NEXT; /* left half: scan/mode, right half: next page */
 }
 
 unsigned td_keys(void) {
