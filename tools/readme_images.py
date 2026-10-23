@@ -76,11 +76,13 @@ def text(d, x, y, s, c, f=TXT, anchor='la'):
 
 
 def header(d, title, mid, mid_c, right, best=None):
+    """As the firmware's header_row(): status right after the title."""
     d.rectangle([0, 0, W, P(10) - 1], fill=C_BAR)
     text(d, P(2), 1, title, C_YELLOW)
-    text(d, P(72), 1, mid, mid_c)
+    x = P(2) + d.textlength(title, font=TXT) + P(7)
+    text(d, x, 1, mid, mid_c)
     if best:
-        text(d, P(132), 1, best, C_GREEN)
+        text(d, x + d.textlength(mid, font=TXT) + P(6), 1, best, C_GREEN)
     text(d, W - P(2), 1, right, C_DIM, anchor='ra')
 
 
@@ -113,7 +115,7 @@ def frame(screen, marks, name):
 def page_waterfall():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'WASSERFALL', '7 Netze', C_CYAN, '1/3', 'best 11')
+    header(d, 'WASSERFALL VOLL', '7 Netze', C_CYAN, '1/5', 'best 11')
     gy, gh = P(10), P(34)
     wy, ay = gy + gh + 1, H - P(10)
     aps = [(1, 0.55, 0.9), (6, 0.8, 0.95), (11, 0.15, 0.55), (3, 0.08, 0.35)]
@@ -172,7 +174,7 @@ def page_waterfall():
 def page_networks():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'NETZE', '7 Netze', C_CYAN, '2/3')
+    header(d, 'NETZE', '7 Netze', C_CYAN, '2/5')
     nets = [(6, 'FRITZ!Box 7590 XY', -41, 0.71), (1, 'Vodafone-2G', -55, 0.42),
             (6, 'eduroam', -63, 0.71), (11, 'Telekom_FON', -68, 0.12), (3, 'DIRECT-7A-HP Laser', -71, 0.06),
             (1, '<versteckt>', -79, 0.42), (11, 'iPhone von Alex', -84, 0.12)]
@@ -191,7 +193,7 @@ def page_networks():
 def page_channels():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'KANAELE', '7 Netze', C_CYAN, '3/3', 'best 11')
+    header(d, 'KANAELE WIFI', '7 Netze', C_CYAN, '3/5', 'best 11')
     cw = W // 13
     x0 = (W - cw * 13) // 2
     bar_y, bar_h = P(22), P(88)
@@ -227,8 +229,7 @@ def page_channels():
 def page_detector():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'DETEKTOR', '', C_GREEN, 'S2/4')
-    text(d, P(66), 1, 'genullt +4dB G34 1:12', C_GREEN)
+    header(d, 'DETEKTOR PEAKS', 'genullt +4dB G34 1:12', C_GREEN, 'S2/4')
     text(d, P(4), P(10) + P(5), '+18', C_YELLOW, BIG)
     text(d, P(8) + d.textlength('+18', font=BIG), P(10) + P(20), 'dB', C_DIM)
     text(d, P(110), P(10) + P(6), 'Spitze +27 dB', C_TEXT)
@@ -263,8 +264,7 @@ def page_detector():
 def page_ble():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'BLE LISTE', '', C_GREEN, 'S4/4')
-    text(d, P(66), 1, '18 aktiv, 31 gesamt', C_GREEN)
+    header(d, 'BLE LISTE', '18 aktiv, 31 gesamt', C_GREEN, 'S4/4')
     devs = [(-41, -38, 'Galaxy Watch6 (4F2A)', '0964ebab12cb', 0, 'new'), (-50, -46, '(Microsoft)', '1adf399a6d9e', 0, ''),
             (-52, -47, '?', '32f43d652743', 0, ''), (-58, -54, 'FNB58-052309', '98dab0076b3f*', 0, ''),
             (-61, -57, 'ATC_548972', 'a4c138548972*', 2, ''), (-69, -63, '(Apple)', '6f869654b01d', 0, ''),
@@ -290,10 +290,81 @@ def page_ble():
           'page-ble-list.png')
 
 
+# --------------------------------------------------------------------------- KANAELE ZIGBEE
+def page_zigbee():
+    img = Image.new('RGB', (W, H), C_BG)
+    d = ImageDraw.Draw(img)
+    header(d, 'KANAELE ZIGBEE', '7 Netze', C_CYAN, '4/5')
+    cw = W // 16
+    x0 = (W - cw * 16) // 2
+    bar_y, bar_h = P(22), P(88)
+    lvl = [6, 9, 22, 8, 31, 5, 7, 18, 12, 6, 4, 9, 7, 5, 26, 3]
+    act = [0.02, 0.05, 0.38, 0.06, 0.12, 0.03, 0.04, 0.31, 0.22, 0.04, 0.02, 0.18, 0.05, 0.03, 0.09, 0.01]
+    hold = [v + 6 for v in lvl]
+    xc = lambda c: x0 + (c - 11) * cw + cw / 2
+    for k in range(16):
+        c = 11 + k
+        x = x0 + k * cw
+        gap = c in (15, 20, 25, 26)
+        d.rectangle([x + P(1), bar_y, x + cw - P(1) - 1, bar_y + bar_h - 1], fill=C_WIFI if gap else C_COL)
+        for db in (10, 20, 30):
+            yy = bar_y + bar_h - int(db / 40 * bar_h)
+            d.line([x + P(1), yy, x + cw - P(1) - 1, yy], fill=C_GRID)
+        lh = int(lvl[k] / 40 * bar_h)
+        d.rectangle([x + P(2), bar_y + bar_h - lh, x + cw - P(2) - 1, bar_y + bar_h - 1], fill=air_colour(act[k]))
+        yy = bar_y + bar_h - int(hold[k] / 40 * bar_h)
+        d.rectangle([x + P(1), yy, x + cw - P(1) - 1, yy + P(2) - 1], fill=C_WHITE)
+        text(d, x + cw / 2, bar_y + bar_h + P(3), str(c), C_CYAN if gap else C_DIM, anchor='ma')
+        text(d, x + cw / 2, bar_y + bar_h + P(13), str(round(act[k] * 100)), air_colour(act[k]), anchor='ma')
+    frame(img, [(xc(15), bar_y + 20), (xc(13), bar_y + bar_h - 30), (xc(19), bar_y + bar_h - int(24 / 40 * bar_h) - 14),
+                (None, bar_y + bar_h + P(8)), (None, bar_y + bar_h + P(18))], 'page-zigbee.png')
+
+
+# --------------------------------------------------------------------------- PEGEL WIFI SINGLE
+def page_coverage():
+    img = Image.new('RGB', (W, H), C_BG)
+    d = ImageDraw.Draw(img)
+    header(d, 'PEGEL WIFI SINGLE', '7 Netze', C_CYAN, '5/5')
+    text(d, P(4), P(13), 'FRITZ!Box 7590 XY', C_TEXT)
+    text(d, P(4), P(24), 'Kanal 6  3c3786a1b2c4', C_DIM)
+    r = -58
+    text(d, P(8), P(34), str(r), rssi_colour(r), BIG)
+    text(d, P(12) + d.textlength(str(r), font=BIG), P(51), 'dBm', C_DIM)
+    text(d, W - P(6), P(38), 'Rahmen/s 23', C_TEXT, anchor='ra')
+    text(d, W - P(6), P(50), 'min -71  max -44', C_DIM, anchor='ra')
+    bx, by, bw, bh = P(6), P(66), W - P(12), P(10)
+    cx = lambda v, x0, w: x0 + max(0, min(w - 1, (v + 100) * w // 70))
+    d.rectangle([bx, by, bx + bw - 1, by + bh - 1], fill=C_COL)
+    d.rectangle([bx, by, cx(r, 0, bw) + bx, by + bh - 1], fill=rssi_colour(r))
+    d.rectangle([cx(-71, bx, bw), by - P(2), cx(-71, bx, bw) + P(1) - 1, by + bh + P(2)], fill=C_DIM)
+    d.rectangle([cx(-44, bx, bw), by - P(2), cx(-44, bx, bw) + P(2) - 1, by + bh + P(2)], fill=C_WHITE)
+    hy = P(82)
+    hh = H - hy - P(12)
+    for db in range(-90, -30, 10):
+        yy = hy + hh - (db + 100) * hh // 70
+        d.line([0, yy, W, yy], fill=C_GRID)
+    n = 128
+    for i in range(n):
+        # Walking away from the access point and back: -45 .. -72 .. -55 dBm.
+        t = i / (n - 1)
+        v = -45 - 27 * math.sin(math.pi * min(t * 1.4, 1.0)) + 8 * t + random.uniform(-2, 2)
+        if 0.52 < t < 0.56:
+            continue                      # no frame heard for a moment
+        bh2 = max(1, int((v + 100) * hh / 70))
+        x, x2 = i * W // n, (i + 1) * W // n
+        d.rectangle([x, hy + hh - bh2, max(x, x2 - 2), hy + hh - 1], fill=rssi_colour(int(v)))
+    text(d, P(2), H - P(11), '32 s', C_DIM)
+    text(d, W - P(2), H - P(11), 'lang: Netz', C_DIM, anchor='ra')
+    frame(img, [(P(150), P(18)), (P(70), P(43)), (W - P(70), P(44)), (cx(-44, bx, bw), by + bh + 10),
+                (W // 2, hy + 20), (W - P(48), H - P(6))], 'page-coverage.png')
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     page_waterfall()
     page_networks()
     page_channels()
+    page_zigbee()
+    page_coverage()
     page_detector()
     page_ble()

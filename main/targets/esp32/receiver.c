@@ -497,6 +497,79 @@ int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels) {
     scan_phase_us[3] = (unsigned)(esp_timer_get_time() - t0);
     return found;
 }
+
+/* Coverage watch: RSSI of every frame one station sends (transmitter
+ * address, offset 10 of the 802.11 header), collected in the Wi-Fi task. */
+static uint8_t watch_bssid[6];
+static bool watching;
+static portMUX_TYPE watch_lock = portMUX_INITIALIZER_UNLOCKED;
+static unsigned watch_n;
+static int watch_sum, watch_max = -127, watch_last = -127;
+static void watch_rx(void *buf, wifi_promiscuous_pkt_type_t type) {
+    (void)type;
+    const wifi_promiscuous_pkt_t *p = buf;
+    if (p->rx_ctrl.sig_len < 24 || memcmp(p->payload + 10, watch_bssid, 6)) return;
+    const int r = p->rx_ctrl.rssi;
+    portENTER_CRITICAL(&watch_lock);
+    watch_n++;
+    watch_sum += r;
+    if (r > watch_max) watch_max = r;
+    watch_last = r;
+    portEXIT_CRITICAL(&watch_lock);
+}
+unsigned sdr_local_watch_poll(int *max_dbm, float *mean_dbm, int *last_dbm) {
+    portENTER_CRITICAL(&watch_lock);
+    const unsigned n = watch_n;
+    *max_dbm = watch_max;
+    *mean_dbm = n ? (float)watch_sum / n : -127;
+    *last_dbm = watch_last;
+    watch_n = 0;
+    watch_sum = 0;
+    watch_max = -127;
+    portEXIT_CRITICAL(&watch_lock);
+    return n;
+}
+static void watch_listen(unsigned channel) {
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    const wifi_promiscuous_filter_t f = {.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
+    esp_wifi_set_promiscuous_filter(&f);
+    esp_wifi_set_promiscuous_rx_cb(watch_rx);
+    watching = true;
+}
+static void watch_unlisten(void) {
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    const wifi_promiscuous_filter_t all = {.filter_mask = WIFI_PROMIS_FILTER_MASK_ALL};
+    esp_wifi_set_promiscuous_filter(&all);
+    watching = false;
+}
+static bool watch_agc_saved;
+bool sdr_local_watch_start(const uint8_t bssid[6], unsigned channel) {
+    if (channel < 1 || channel > 14) return false;
+    if (watching) watch_unlisten();
+    else watch_agc_saved = hardware_agc;
+    memcpy(watch_bssid, bssid, 6);
+    int a, l; float m;
+    sdr_local_watch_poll(&a, &m, &l);
+    /* Calibrated for this channel (see sdr_local_wifi_scan), PHY AGC on. */
+    cal_elsewhere = true;
+    tune_rx(channel == 14 ? 2484 : 2407 + 5 * channel);
+    prepare_rx();
+    cal_elsewhere = true;
+    hardware_agc = true;
+    apply_gain();
+    rx_lo_select(false);
+    watch_listen(channel);
+    return true;
+}
+void sdr_local_watch_stop(void) {
+    if (!watching) return;
+    watch_unlisten();
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    hardware_agc = watch_agc_saved;
+    tune_rx(frequency_mhz);
+    prepare_rx();
+    apply_gain();
+}
 unsigned sdr_local_bandwidth(void) { return rx_filter < 0 ? 0 : rx_filter_mhz; }
 void sdr_local_set_bandwidth(unsigned mhz) {
     if (mhz && (mhz < RX_BANDWIDTH_MIN || mhz > RX_BANDWIDTH_MAX)) return;

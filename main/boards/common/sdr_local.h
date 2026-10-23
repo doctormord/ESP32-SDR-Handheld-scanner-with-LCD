@@ -36,6 +36,15 @@ typedef struct {
 } sdr_local_ap_t;
 int sdr_local_wifi_scan(sdr_local_ap_t *out, int max, uint16_t channels);
 
+/* Coverage: the radio leaves SDR mode, calibrates for the Wi-Fi channel and
+ * listens there (hardware AGC) for frames sent by one station (bssid);
+ * sdr_local_watch_poll() returns how many came since the last poll, their
+ * strongest and mean RSSI (dBm) and the last one. The radio stays there
+ * until sdr_local_watch_stop(), which restores the receiver. */
+bool sdr_local_watch_start(const uint8_t bssid[6], unsigned channel);
+unsigned sdr_local_watch_poll(int *max_dbm, float *mean_dbm, int *last_dbm);
+void sdr_local_watch_stop(void);
+
 /* BLE device list (boards with BLE in the build). The BT controller and the
  * receiver do not fit into internal RAM together, so BLE runs in its own
  * start: sdr_local_reboot(SDR_BOOT_BLE, 0) starts the board without Wi-Fi
