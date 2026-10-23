@@ -125,6 +125,14 @@ static SemaphoreHandle_t lcd_lock;
 static TaskHandle_t draw_task;
 static void lock_lcd(void) { if (lcd_lock) xSemaphoreTake(lcd_lock, portMAX_DELAY); }
 static void unlock_lcd(void) { if (lcd_lock) xSemaphoreGive(lcd_lock); }
+/* With two cores the picture is drawn strip by strip while the other core
+ * measures: a bar or number spanning several strips came out half old, half
+ * new. ui_lock is held while a frame is drawn and while measured values are
+ * written (not while capturing or analysing), so each frame shows one state.
+ * Order: lcd_lock before ui_lock, never the other way round. */
+static SemaphoreHandle_t ui_lock;
+static void lock_ui(void) { if (ui_lock) xSemaphoreTake(ui_lock, portMAX_DELAY); }
+static void unlock_ui(void) { if (ui_lock) xSemaphoreGive(ui_lock); }
 
 /* One capture with the display quiet. */
 static const uint32_t *quiet_capture_n(unsigned n) {
@@ -157,6 +165,10 @@ typedef struct {
 } chan_t;
 
 UI_BSS static chan_t ch[CHANNELS];
+/* fv_*: copies taken once per drawn frame (frame_view()), so a frame drawn
+ * strip by strip on the other core shows one state throughout. */
+static float fv_air[CHANNELS];
+static int fv_wf_head;
 static float band[CHANNELS];
 static float ref = -200;      /* quiet floor at gain 50, dB per bin */
 static int64_t last_at;
@@ -222,6 +234,7 @@ static void dwell(void) {
     const float off = gain_offset(gain);
     const float busy_db = ref < -150 ? -200 : ref + off + DETECT_DB;
     if (!iq || !zb_analyze(iq, CAP_N, 80, lo, band, CHANNELS, 8, busy_db, &r)) return;
+    lock_ui();
     caps++;
     f_caps++;
     f_clipped += r.clip;
@@ -247,6 +260,7 @@ static void dwell(void) {
         chan_update(&ch[i], r.peak[i] - off - ref, r.busy[i], now);
     }
     glow_add(off, r.clip);
+    unlock_ui();
 }
 
 /* ---- colour themes ---------------------------------------------------------- */
@@ -467,6 +481,11 @@ UI_BSS static sdr_local_ap_t aps[TABLE_MAX]; /* shown, strongest first */
 static int ap_count = -1;      /* -1: no scan yet */
 static uint8_t ap_per_ch[CHANNELS + 2];
 static int scan_part;
+/* Periodic scanning (survey, hold right twice as long): a full scan every
+ * SCAN_AUTO_US on WASSERFALL, NETZE and KANAELE WIFI, so the counts follow
+ * when the board is carried around (each scan stops the picture briefly). */
+#define SCAN_AUTO_US 1000000
+static bool scan_auto;
 
 static int ap_cmp(const void *a, const void *b) {
     return ((const sdr_local_ap_t *)b)->rssi - ((const sdr_local_ap_t *)a)->rssi;
@@ -650,7 +669,7 @@ static void draw_header(uint16_t *s, int y0, int h) {
     if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
     else if (scanning) snprintf(t, sizeof(t), "scan..");
     else if (page == PAGE_ZB) t[0] = 0;
-    else snprintf(t, sizeof(t), "%d Netze", ap_count < 0 ? 0 : ap_count);
+    else snprintf(t, sizeof(t), scan_auto ? "%d Netze  scan auto" : "%d Netze", ap_count < 0 ? 0 : ap_count);
     const bool clipping = !agc_mode && clip_rate > 0.3f;
     char pg[24];
     snprintf(pg, sizeof(pg), "%d/%d", page + 1, PAGES);
@@ -673,18 +692,10 @@ static void wf_strip(uint16_t *s, int y0, int h) {
             row[x] = v ? lut[v] : C_BLACK;
         }
     }
-    /* The quietest of 1/6/11, at the foot of the phosphor plot (which changes
-     * every frame anyway, so header and axis stay still). */
-    const int best = best_channel();
-    if (best && y0 < WF_Y && y0 + h > WF_Y - P(10)) {
-        const int bx = mhz_col(wifi_mhz(best)), tw = text_w("best", 1);
-        rect(s, y0, h, bx - tw / 2 - P(2), WF_Y - P(10), tw + P(4), P(9), C_BLACK);
-        text_c(s, y0, h, bx, WF_Y - P(10), "best", C_GREEN, 1);
-    }
     if (y0 <= WF_Y - 1 && y0 + h > WF_Y - 1) rect(s, y0, h, 0, WF_Y - 1, UW, 1, C_BAR);
     /* Occupancy waterfall, newest row on top. */
     for (int y = y0 > WF_Y ? y0 : WF_Y; y < y0 + h && y < AXIS_Y; y++) {
-        const uint8_t *src = wf + ((wf_head - (y - WF_Y) + WF_ROWS) % WF_ROWS) * UW;
+        const uint8_t *src = wf + ((fv_wf_head - (y - WF_Y) + WF_ROWS) % WF_ROWS) * UW;
         uint16_t *row = s + (y - y0) * W;
         const bool dotted = (y / UI_SCALE & 3) == 0;
         for (int x = 0; x < UW; x++) {
@@ -803,8 +814,8 @@ static void chan_strip(uint16_t *s, int y0, int h) {
         }
         snprintf(t, sizeof(t), "%d", c);
         text_c(s, y0, h, cx, CH_NUM_Y, t, main_ch ? C_CYAN : C_DIM, 1);
-        snprintf(t, sizeof(t), "%u", (unsigned)(ch[i].air * 100 + 0.5f));
-        text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(ch[i].air), 1);
+        snprintf(t, sizeof(t), "%u", (unsigned)(fv_air[i] * 100 + 0.5f));
+        text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(fv_air[i]), 1);
     }
 }
 
@@ -817,6 +828,7 @@ static void chan_strip(uint16_t *s, int y0, int h) {
 #define ZB_CH 16
 #define ZB_LVL_DB 40.0f            /* level that fills a bar */
 UI_BSS static chan_t zch[ZB_CH];
+static float fv_zair[ZB_CH], fv_zhold[ZB_CH];
 static float zdisp[ZB_CH];
 
 static void zb_dwell(void) {
@@ -834,6 +846,7 @@ static void zb_dwell(void) {
     const float busy_db = ref < -150 ? -200 : ref + off + DETECT_DB;
     zb_result_t r;
     if (!iq || !zb_analyze(iq, CAP_N, 80, lo, band_mhz, ZB_CH, 1, busy_db, &r)) return;
+    lock_ui();
     caps++;
     const int64_t now = esp_timer_get_time();
     const float dt = last ? (now - last) * 1e-6f : 0;
@@ -845,6 +858,12 @@ static void zb_dwell(void) {
         if (r.peak[k] < -150 || ref < -150) continue;
         chan_update(&zch[k], r.peak[k] - off - ref, r.busy[k], now);
     }
+    unlock_ui();
+}
+
+/* Once per drawn frame (not per strip): bars glide to the measured level. */
+static void zb_ease(void) {
+    for (int k = 0; k < ZB_CH; k++) zdisp[k] += EASE * (zch[k].now - zdisp[k]);
 }
 
 static int zb_h(float db) {
@@ -860,18 +879,17 @@ static void zb_strip(uint16_t *s, int y0, int h) {
     for (int k = 0; k < ZB_CH; k++) {
         const int x = x0 + k * cw, c = 11 + k, cx = x + cw / 2;
         const bool gap = c == 15 || c == 20 || c == 25 || c == 26;
-        zdisp[k] += EASE * (zch[k].now - zdisp[k]);
         rect(s, y0, h, x + P(1), CH_BAR_Y, cw - P(2), CH_BAR_H, gap ? C_WIFI : C_COL);
         for (int d = 10; d < (int)ZB_LVL_DB; d += 10)
             rect(s, y0, h, x + P(1), CH_BAR_Y + CH_BAR_H - zb_h(d), cw - P(2), 1, C_GRID);
         const int lh = zb_h(zdisp[k]);
-        if (lh) rect(s, y0, h, x + P(2), CH_BAR_Y + CH_BAR_H - lh, cw - P(4), lh, air_colour(zch[k].air));
-        if (zch[k].hold > 1)
-            rect(s, y0, h, x + P(1), CH_BAR_Y + CH_BAR_H - zb_h(zch[k].hold), cw - P(2), P(2), C_WHITE);
+        if (lh) rect(s, y0, h, x + P(2), CH_BAR_Y + CH_BAR_H - lh, cw - P(4), lh, air_colour(fv_zair[k]));
+        if (fv_zhold[k] > 1)
+            rect(s, y0, h, x + P(1), CH_BAR_Y + CH_BAR_H - zb_h(fv_zhold[k]), cw - P(2), P(2), C_WHITE);
         snprintf(t, sizeof(t), "%d", c);
         text_c(s, y0, h, cx, CH_NUM_Y, t, gap ? C_CYAN : C_DIM, 1);
-        snprintf(t, sizeof(t), "%u", (unsigned)(zch[k].air * 100 + 0.5f));
-        text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(zch[k].air), 1);
+        snprintf(t, sizeof(t), "%u", (unsigned)(fv_zair[k] * 100 + 0.5f));
+        text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(fv_zair[k]), 1);
     }
 }
 
@@ -893,6 +911,11 @@ static int8_t cov_hist[COV_HIST];
 static int cov_head;
 static unsigned cov_frames, cov_fps;
 static int64_t cov_heard_at, cov_bucket_at, cov_fps_at;
+static float fv_cov_val;
+static int fv_cov_min, fv_cov_max, fv_cov_head;
+static unsigned fv_cov_fps;
+static int64_t fv_cov_heard_at;
+static int8_t fv_cov_hist[COV_HIST];
 
 static void cov_reset_stats(void) {
     cov_val = -127;
@@ -912,12 +935,14 @@ static void cov_pick(int dir) {
         for (int k = 0; k < ap_count; k++) if (!memcmp(aps[k].bssid, cov_bssid, 6)) cur = k;
         i = cur < 0 ? 0 : (cur + dir + ap_count) % ap_count;
     }
+    lock_ui();
     memcpy(cov_bssid, aps[i].bssid, 6);
     snprintf(cov_ssid, sizeof(cov_ssid), "%s", aps[i].ssid[0] ? aps[i].ssid : "<versteckt>");
     for (char *q = cov_ssid; *q; q++) if ((unsigned char)*q < 0x20 || (unsigned char)*q > 0x7e) *q = '?';
     cov_ch = aps[i].channel;
     cov_have = true;
     cov_reset_stats();
+    unlock_ui();
     if (cov_on) {
         lock_lcd();
         td_lcd_idle();
@@ -950,6 +975,7 @@ static void cov_step(int64_t now) {
     int mx, last;
     float mean;
     const unsigned n = sdr_local_watch_poll(&mx, &mean, &last);
+    lock_ui();
     if (n) {
         /* Mostly the newest frames, so walking shows at once. */
         cov_val = cov_val < -126 ? mean : cov_val + 0.5f * (mean - cov_val);
@@ -966,6 +992,7 @@ static void cov_step(int64_t now) {
         cov_bucket = -127;
     }
     if (now - cov_fps_at >= 1000000) {cov_fps = cov_frames; cov_frames = 0; cov_fps_at = now;}
+    unlock_ui();
 }
 
 static int cov_x(int dbm, int x0, int w) {
@@ -982,22 +1009,22 @@ static void cov_strip(uint16_t *s, int y0, int h) {
         text(s, y0, h, P(8), P(50), ap_count < 0 ? "Noch kein Scan ..." : "Keine Netze gefunden", C_DIM, 1);
         return;
     }
-    const bool live = cov_heard_at && now - cov_heard_at < 1000000;
+    const bool live = fv_cov_heard_at && now - fv_cov_heard_at < 1000000;
     snprintf(t, sizeof(t), "%s", cov_ssid);
     text(s, y0, h, P(4), P(13), t, C_TEXT, 1);
     snprintf(t, sizeof(t), "Kanal %d  %02x%02x%02x%02x%02x%02x", cov_ch, cov_bssid[0], cov_bssid[1], cov_bssid[2],
              cov_bssid[3], cov_bssid[4], cov_bssid[5]);
     text(s, y0, h, P(4), P(24), t, C_DIM, 1);
-    const int r = (int)(cov_val + (cov_val < 0 ? -0.5f : 0.5f));
+    const int r = (int)(fv_cov_val + (fv_cov_val < 0 ? -0.5f : 0.5f));
     if (live) snprintf(t, sizeof(t), "%d", r);
     else snprintf(t, sizeof(t), "--");
     const uint16_t c = live ? rssi_colour(r) : C_DIM;
     const int nw = big_text(s, y0, h, P(8), P(36), t, c);
     text(s, y0, h, P(12) + nw, P(51), "dBm", C_DIM, 1);
-    snprintf(t, sizeof(t), "Rahmen/s %u", cov_fps);
-    text(s, y0, h, UW - P(6) - text_w(t, 1), P(38), t, cov_fps ? C_TEXT : C_DIM, 1);
-    if (cov_max > -127) {
-        snprintf(t, sizeof(t), "min %d  max %d", cov_min, cov_max);
+    snprintf(t, sizeof(t), "Rahmen/s %u", fv_cov_fps);
+    text(s, y0, h, UW - P(6) - text_w(t, 1), P(38), t, fv_cov_fps ? C_TEXT : C_DIM, 1);
+    if (fv_cov_max > -127) {
+        snprintf(t, sizeof(t), "min %d  max %d", fv_cov_min, fv_cov_max);
         text(s, y0, h, UW - P(6) - text_w(t, 1), P(50), t, C_DIM, 1);
     }
     if (!live) text(s, y0, h, UW - P(6) - text_w("kein Signal", 1), P(26), "kein Signal", C_ORANGE, 1);
@@ -1005,15 +1032,15 @@ static void cov_strip(uint16_t *s, int y0, int h) {
     const int bx = P(6), by = P(66), bw = UW - P(12), bh = P(10);
     rect(s, y0, h, bx, by, bw, bh, C_COL);
     if (live) rect(s, y0, h, bx, by, cov_x(r, 0, bw), bh, c);
-    if (cov_max > -127) {
-        rect(s, y0, h, cov_x(cov_min, bx, bw), by - P(2), P(1), bh + P(4), C_DIM);
-        rect(s, y0, h, cov_x(cov_max, bx, bw), by - P(2), P(2), bh + P(4), C_WHITE);
+    if (fv_cov_max > -127) {
+        rect(s, y0, h, cov_x(fv_cov_min, bx, bw), by - P(2), P(1), bh + P(4), C_DIM);
+        rect(s, y0, h, cov_x(fv_cov_max, bx, bw), by - P(2), P(2), bh + P(4), C_WHITE);
     }
     /* History: 32 s, the strongest frame per 250 ms, -100..-30 dBm. */
     const int hy = P(82), hh = H - hy - P(12);
     for (int d = -90; d < -30; d += 10) rect(s, y0, h, 0, hy + hh - (d + 100) * hh / 70, UW, 1, C_GRID);
     for (int i = 0; i < COV_HIST; i++) {
-        const int v = cov_hist[(cov_head + 1 + i) % COV_HIST];
+        const int v = fv_cov_hist[(fv_cov_head + 1 + i) % COV_HIST];
         if (v <= -127) continue;
         int bh2 = (v + 100) * hh / 70;
         if (bh2 < 1) bh2 = 1;
@@ -1115,6 +1142,9 @@ static int64_t sn_phase_until;
 static unsigned sn_v_lit, sn_v_px, sn_tries;
 static float sn_meter, sn_hist_max, sn_activity;
 static uint8_t sn_hist[SN_HIST];
+static uint8_t fv_sn_hist[SN_HIST];
+static float fv_sn_meter, fv_sn_fast, fv_sn_slow, fv_sn_best;
+static int fv_sn_hist_head;
 static int sn_hist_head;
 static unsigned sn_row_n;
 static const float sn_adv_mhz[3] = {2402, 2426, 2480};
@@ -1209,6 +1239,7 @@ static void sn_dwell(void) {
     const uint32_t *iq = quiet_capture_n(SN_CAP_N);
     float fl;
     if (iq && zb_peak_spectrum(iq, SN_CAP_N, 80, lo, SN_TOP, sn_spec, &fl)) {
+        lock_ui();
         caps++;
         if (fl > -150) track_floor(fl, (int)zb_last_gain_mean);
         if (ref > -150)
@@ -1218,6 +1249,7 @@ static void sn_dwell(void) {
                 for (int k = sn_k0[x]; k <= sn_k1[x]; k++) if (sn_spec[k] > m) m = sn_spec[k];
                 if (m > -150 && m - ref > sn_lvl[x]) sn_lvl[x] = m - ref;
             }
+        unlock_ui();
     }
     w ^= 1;
 }
@@ -1355,20 +1387,20 @@ static void sn_find_strip(uint16_t *s, int y0, int h) {
     char t[24];
     if (y0 < SN_WF_Y && y0 + h > HDR_H) {
         /* Big number: strongest signal over the room (or over the floor). */
-        snprintf(t, sizeof(t), "%+d", (int)(sn_meter + 0.5f));
-        const int nw = big_text(s, y0, h, P(4), HDR_H + P(7), t, sn_based ? sn_level_colour(sn_meter) : C_TEXT);
+        snprintf(t, sizeof(t), "%+d", (int)(fv_sn_meter + 0.5f));
+        const int nw = big_text(s, y0, h, P(4), HDR_H + P(7), t, sn_based ? sn_level_colour(fv_sn_meter) : C_TEXT);
         text(s, y0, h, P(8) + nw, HDR_H + P(22), "dB", C_DIM, 1);
         const int hx = UW - SN_HIST, hy = HDR_H + P(2), hh = SN_TOP_H - P(4);
         rect(s, y0, h, hx, hy, SN_HIST, hh, C_COL);
         for (int i = 0; i < SN_HIST; i++) {
-            const uint8_t v = sn_hist[(sn_hist_head + 1 + i) % SN_HIST];
+            const uint8_t v = fv_sn_hist[(fv_sn_hist_head + 1 + i) % SN_HIST];
             const int bh = v * hh / 255;
             if (bh) rect(s, y0, h, hx + i, hy + hh - bh, 1, bh, sn_level_colour(v * SN_METER_DB / 255));
         }
     }
     if (y0 <= SN_WF_Y - 1 && y0 + h > SN_WF_Y - 1) rect(s, y0, h, 0, SN_WF_Y - 1, UW, 1, C_BAR);
     for (int y = y0 > SN_WF_Y ? y0 : SN_WF_Y; y < y0 + h && y < SN_AXIS_Y; y++) {
-        const uint8_t *src = wf + ((wf_head - (y - SN_WF_Y) + SN_ROWS) % SN_ROWS) * UW;
+        const uint8_t *src = wf + ((fv_wf_head - (y - SN_WF_Y) + SN_ROWS) % SN_ROWS) * UW;
         uint16_t *row = s + (y - y0) * W;
         for (int x = 0; x < UW; x++) row[x] = src[x] ? lut[src[x]] : C_BLACK;
     }
@@ -1393,7 +1425,7 @@ static void sn_peil_strip(uint16_t *s, int y0, int h) {
     sv_fill(s, W, h, C_BLACK);
     sn_header(s, y0, h);
     char t[24];
-    const float v = sn_fast > 0 ? sn_fast : 0, trend = sn_fast - sn_slow;
+    const float v = fv_sn_fast > 0 ? fv_sn_fast : 0, trend = fv_sn_fast - fv_sn_slow;
     const uint16_t c = sn_based ? sn_level_colour(v) : C_TEXT;
     snprintf(t, sizeof(t), "%+d", (int)(v + 0.5f));
     const int nw = big_text_w(t), nx = (UW - nw) / 2 - P(20);
@@ -1417,14 +1449,14 @@ static void sn_peil_strip(uint16_t *s, int y0, int h) {
     int fill = (int)(v / SN_METER_DB * bw);
     if (fill > bw) fill = bw;
     if (fill > 0) rect(s, y0, h, bx, by, fill, bh, c);
-    int bm = (int)(sn_best / SN_METER_DB * bw);
+    int bm = (int)(fv_sn_best / SN_METER_DB * bw);
     if (bm > bw - P(2)) bm = bw - P(2);
-    if (sn_best > 0.5f) rect(s, y0, h, bx + bm, by - P(3), P(2), bh + P(6), C_WHITE);
+    if (fv_sn_best > 0.5f) rect(s, y0, h, bx + bm, by - P(3), P(2), bh + P(6), C_WHITE);
     for (int d = 10; d < (int)SN_METER_DB; d += 10) {
         const int gx = bx + d * bw / (int)SN_METER_DB;
         rect(s, y0, h, gx, by + bh, P(1), P(3), C_DIM);
     }
-    snprintf(t, sizeof(t), "Bestwert %+d dB", (int)(sn_best + 0.5f));
+    snprintf(t, sizeof(t), "Bestwert %+d dB", (int)(fv_sn_best + 0.5f));
     text(s, y0, h, P(6), P(88), t, C_TEXT, 1);
     text(s, y0, h, P(6), P(104), sn_based ? "ueber dem Raum (genullt)" : "ueber dem Rauschen (ohne Basis)", C_DIM, 1);
     text(s, y0, h, P(6), P(120), "Brust-Peilung: langsam drehen", C_DIM, 1);
@@ -1485,6 +1517,8 @@ static bool det_based, det_ok = true;
 static int64_t det_phase_until, det_based_at, det_hits_at;
 static unsigned det_v_lit, det_v_n, det_tries, det_hit_count;
 static uint32_t det_blocks;
+static float fv_det_meter, fv_det_best, fv_det_hits;
+static int fv_det_wf_head;
 
 static void det_init(void) {
     /* Fixed gain, raw power: no per-sample compensation. */
@@ -1516,6 +1550,7 @@ static void det_step(int64_t now) {
     unlock_lcd();
     caps++;
     if (!det_ok) return;
+    lock_ui();
     float peak = 0;
     {
         /* Per slot: bins to dB; the median bin is the floor; the slot's value
@@ -1625,6 +1660,7 @@ static void det_step(int64_t now) {
         det_hit_count = 0;
         det_hits_at = now;
     }
+    unlock_ui();
 }
 
 static void det_header(uint16_t *s, int y0, int h) {
@@ -1655,19 +1691,19 @@ static void det_strip(uint16_t *s, int y0, int h) {
     det_header(s, y0, h);
     char t[32];
     if (y0 < DET_CH_Y && y0 + h > HDR_H) {
-        snprintf(t, sizeof(t), "%+d", (int)(det_meter + 0.5f));
-        const int nw = big_text(s, y0, h, P(4), HDR_H + P(7), t, det_based ? sn_level_colour(det_meter) : C_TEXT);
+        snprintf(t, sizeof(t), "%+d", (int)(fv_det_meter + 0.5f));
+        const int nw = big_text(s, y0, h, P(4), HDR_H + P(7), t, det_based ? sn_level_colour(fv_det_meter) : C_TEXT);
         text(s, y0, h, P(8) + nw, HDR_H + P(22), "dB", C_DIM, 1);
-        snprintf(t, sizeof(t), "Spitze %+d dB", (int)(det_best + 0.5f));
+        snprintf(t, sizeof(t), "Spitze %+d dB", (int)(fv_det_best + 0.5f));
         text(s, y0, h, P(110), HDR_H + P(6), t, C_TEXT, 1);
-        snprintf(t, sizeof(t), "Treffer/s %d", (int)(det_hits + 0.5f));
-        text(s, y0, h, P(110), HDR_H + P(20), t, det_hits >= 1 ? C_YELLOW : C_DIM, 1);
+        snprintf(t, sizeof(t), "Treffer/s %d", (int)(fv_det_hits + 0.5f));
+        text(s, y0, h, P(110), HDR_H + P(20), t, fv_det_hits >= 1 ? C_YELLOW : C_DIM, 1);
     }
     const int cy = DET_CH_Y, ch_h = DET_CH_H;
     {
         /* Channelizer waterfall, newest row on top; scale 2402..2481 MHz. */
         for (int y = y0 > cy ? y0 : cy; y < y0 + h && y < cy + ch_h; y++) {
-            const uint8_t *src = wf ? wf + ((det_wf_head - (y - cy) + WF_ROWS) % WF_ROWS) * UW : NULL;
+            const uint8_t *src = wf ? wf + ((fv_det_wf_head - (y - cy) + WF_ROWS) % WF_ROWS) * UW : NULL;
             uint16_t *row = s + (y - y0) * W;
             for (int x = 0; x < UW; x++) row[x] = src && src[x] ? lut[src[x]] : C_BLACK;
         }
@@ -1800,10 +1836,38 @@ static void bl_step(void) {
 
 /* ---- drawing task ---------------------------------------------------------- */
 
+/* Under ui_lock, once per frame: what the strips below show. */
+static void frame_view(void) {
+    for (int i = 0; i < CHANNELS; i++) fv_air[i] = ch[i].air;
+    for (int k = 0; k < ZB_CH; k++) {fv_zair[k] = zch[k].air; fv_zhold[k] = zch[k].hold;}
+    fv_wf_head = wf_head;
+    fv_cov_val = cov_val;
+    fv_cov_min = cov_min;
+    fv_cov_max = cov_max;
+    fv_cov_head = cov_head;
+    fv_cov_fps = cov_fps;
+    fv_cov_heard_at = cov_heard_at;
+    memcpy(fv_cov_hist, cov_hist, sizeof(fv_cov_hist));
+    fv_sn_meter = sn_meter;
+    fv_sn_fast = sn_fast;
+    fv_sn_slow = sn_slow;
+    fv_sn_best = sn_best;
+    fv_sn_hist_head = sn_hist_head;
+    memcpy(fv_sn_hist, sn_hist, sizeof(fv_sn_hist));
+    fv_det_meter = det_meter;
+    fv_det_best = det_best;
+    fv_det_hits = det_hits;
+    fv_det_wf_head = det_wf_head;
+}
+
 static void draw_frame(void) {
     const int64_t tr = esp_timer_get_time();
+    lock_ui();
     glow_fade(tr);
     chan_ease();
+    zb_ease();
+    frame_view();
+    unlock_ui();
     if (sniffer && sn_page == SN_PAGE_BLIST) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
                         : sn_page == SN_PAGE_DET ? det_strip : sn_peil_strip, 0, H);
@@ -1867,11 +1931,13 @@ static void set_page(int p) {
 
 /* A full sweep at start and on request, otherwise one part per step. */
 static void scan(void) {
-    const bool full = full_scan_pending;
+    const bool full = full_scan_pending || scan_auto;
     const uint16_t mask = full ? part_mask(0) | part_mask(1) | part_mask(2) : part_mask(scan_part);
     scanning = true;
     lock_lcd();
+    lock_ui();
     render(draw_header, 0, HDR_H);
+    unlock_ui();
     td_lcd_idle();
     const int64_t t0 = esp_timer_get_time();
     int n = sdr_local_wifi_scan(found, SCAN_MAX, mask);
@@ -1880,12 +1946,14 @@ static void scan(void) {
     unlock_lcd();
     scanning = false;
     if (n >= 0) {
+        lock_ui();
         table_merge(found, n, mask);
+        unlock_ui();
     }
     if (!full) scan_part = (scan_part + 1) % SCAN_PARTS;
     full_scan_pending = false;
-    next_scan_at = CONFIG_ESP_SDR_SCAN_INTERVAL_S
-        ? now + CONFIG_ESP_SDR_SCAN_INTERVAL_S * 1000000LL / SCAN_PARTS : 0;
+    next_scan_at = scan_auto ? esp_timer_get_time() + SCAN_AUTO_US
+        : CONFIG_ESP_SDR_SCAN_INTERVAL_S ? now + CONFIG_ESP_SDR_SCAN_INTERVAL_S * 1000000LL / SCAN_PARTS : 0;
     /* The scan's own receive state is not ours: restart the frame timing. */
     last_at = 0;
 }
@@ -1921,9 +1989,15 @@ static void handle_keys(int64_t now) {
                 sn_null_start(now);
             } else if (page == PAGE_COV) {
                 cov_pick(-1);
-            } else {
+            } /* survey: decided on release, see below */
+        }
+        if (!(k & bit) && (held_prev & bit) && long_done[i] && i && !sniffer && page != PAGE_COV) {
+            /* Right held in survey: 1-2 s one full scan, longer: periodic
+             * scanning on/off (on starts with a scan). */
+            if (now - pressed_at[i] >= 2 * LONG_US) scan_auto = !scan_auto;
+            if (scan_auto || now - pressed_at[i] < 2 * LONG_US) {
                 full_scan_pending = true;
-                next_scan_at = now; /* runs this frame */
+                next_scan_at = now;
             }
         }
         if (!(k & bit) && (held_prev & bit) && !long_done[i]) {
@@ -1939,71 +2013,11 @@ static void handle_keys(int64_t now) {
     held_prev = k;
 }
 
-#if CONFIG_ESP_SDR_PANEL_WASH
-#include "esp_random.h"
-/* Panel wash (CONFIG_ESP_SDR_PANEL_WASH): a maintenance image instead of the
- * scanner. Full-screen colours one second each, then a one-pixel checkerboard
- * inverted every frame (each pixel swings between white and black as fast as
- * the panel refreshes), then random colours per pixel; in a loop, backlight
- * at full. It can fade image retention in the liquid crystal; a loose flex or
- * a dead column driver stays as it is. Reset or power off to end it. */
-static uint16_t wash_c;
-static unsigned wash_frame;
-static void wash_fill(uint16_t *s, int y0, int h) { (void)y0; sv_fill(s, W, h, wash_c); }
-static void wash_checker(uint16_t *s, int y0, int h) {
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < W; x++) s[y * W + x] = ((x + y + y0 + wash_frame) & 1) ? 0xffff : 0x0000;
-}
-static void wash_noise(uint16_t *s, int y0, int h) {
-    (void)y0;
-    for (int i = 0; i < W * h; i += 2) {
-        const uint32_t r = esp_random();
-        s[i] = (uint16_t)r;
-        if (i + 1 < W * h) s[i + 1] = (uint16_t)(r >> 16);
-    }
-}
-static void wash_title(uint16_t *s, int y0, int h) {
-    sv_fill(s, W, h, C_BLACK);
-    text(s, y0, h, P(6), P(10), "PANEL WASH", C_YELLOW, 1);
-    text(s, y0, h, P(6), P(30), "Farben, Schachbrett, Rauschen", C_TEXT, 1);
-    text(s, y0, h, P(6), P(44), "in Schleife. Ende: Reset/aus.", C_TEXT, 1);
-    text(s, y0, h, P(6), P(64), "Hilft gegen eingebrannte Bilder,", C_DIM, 1);
-    text(s, y0, h, P(6), P(78), "nicht gegen Kontakt-/Treiberfehler.", C_DIM, 1);
-}
-static void wash_frame_out(strip_fn fn) {
-    render(fn, 0, H);
-    td_lcd_idle();
-    wash_frame++;
-    vTaskDelay(1);
-}
-static void panel_wash(void) {
-    td_lcd_backlight(100);
-    wash_frame_out(wash_title);
-    vTaskDelay(pdMS_TO_TICKS(4000));
-    static const uint8_t cols[][3] = {
-        {255, 255, 255}, {0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255},
-        {0, 255, 255}, {255, 0, 255}, {255, 255, 0}, {128, 128, 128},
-    };
-    for (;;) {
-        for (unsigned i = 0; i < sizeof(cols) / sizeof(cols[0]); i++) {
-            wash_c = RGB(cols[i][0], cols[i][1], cols[i][2]);
-            const int64_t until = esp_timer_get_time() + 1000000;
-            while (esp_timer_get_time() < until) wash_frame_out(wash_fill);
-        }
-        int64_t until = esp_timer_get_time() + 20000000;
-        while (esp_timer_get_time() < until) wash_frame_out(wash_checker);
-        until = esp_timer_get_time() + 20000000;
-        while (esp_timer_get_time() < until) wash_frame_out(wash_noise);
-    }
-}
-#endif
+
 
 void board_ui_init(void) {
     td_lcd_init();
     td_io_init();
-#if CONFIG_ESP_SDR_PANEL_WASH
-    panel_wash(); /* does not return */
-#endif
     wf = calloc(WF_ROWS, UW);
     glow = calloc(GLOW_H, UW);
     bool ok = wf && glow && zb_init();
@@ -2022,6 +2036,7 @@ void board_ui_init(void) {
     zb_set_gain_comp(agc_mode);
     det_init();
     lcd_lock = xSemaphoreCreateMutex();
+    ui_lock = xSemaphoreCreateMutex();
 #ifdef UI_TASK_CAPS
     xTaskCreatePinnedToCoreWithCaps(draw_loop, "draw", 4096, NULL, 2, &draw_task, DRAW_CORE, UI_TASK_CAPS);
 #else
@@ -2244,6 +2259,13 @@ bool board_ui_command(const char *line) {
         return true;
     }
 #endif
+    if (sscanf(line, "TDSCANAUTO %d", &p) == 1) {
+        scan_auto = p != 0;
+        full_scan_pending = true;
+        next_scan_at = esp_timer_get_time();
+        burst_serial_send("OK\n", 3);
+        return true;
+    }
     if (!strcmp(line, "TDCOV?")) {
         int n = snprintf(buf, sizeof(buf), "TDCOV on %d ssid '%s' ch %d rssi %.1f min %d max %d fps %u live %d\n",
                          cov_on, cov_ssid, cov_ch, cov_val, cov_min, cov_max, cov_fps,
@@ -2327,7 +2349,8 @@ bool board_ui_step(bool host_active) {
     /* Network scans stop the display for a moment, and only NETZE (names,
      * counts) needs them: the waterfall and channel pages, best channel
      * included, run on the SDR measurement. Elsewhere only on request. */
-    if (!sniffer && !cov_page && next_scan_at && now >= next_scan_at && (page == PAGE_NETS || full_scan_pending))
+    const bool scan_page = page == PAGE_NETS || (scan_auto && (page == PAGE_WF || page == PAGE_CHAN));
+    if (!sniffer && !cov_page && next_scan_at && now >= next_scan_at && (scan_page || full_scan_pending))
         scan();
 
     /* One capture per step, whatever is shown. */
@@ -2344,9 +2367,11 @@ bool board_ui_step(bool host_active) {
     if (now - row_at >= ROW_US) {
         row_at = now;
         /* DETEKTOR writes its own rows (one per run) into wf. */
+        lock_ui();
         if (blist || (sniffer && sn_page == SN_PAGE_DET)) {}
         else if (sniffer) sn_push_row(now);
         else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
+        unlock_ui();
     }
     if (!sniffer) {
         if (auto_cycle && now >= hold_until && now - page_at > PAGE_US)

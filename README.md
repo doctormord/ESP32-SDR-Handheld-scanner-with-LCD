@@ -74,6 +74,9 @@ band, and analyses them on the chip:
   between the measurements (every 9 s by default), only while NETZE is shown
   (and once at start, or on request): a scan stops the picture for a moment, and
   the other pages, best channel included, run on the SDR measurement alone.
+  When you carry the board around, **hold the right button for 2 s** to switch
+  on periodic scanning: a full scan every second on WASSERFALL, NETZE and
+  KANAELE WIFI (header: `scan auto`), so the network counts follow you.
 - The hardware AGC sets the gain for every packet; each sample carries its gain
   index and is scaled back to a common level. A phone right next to the board
   (speed test) therefore does not overdrive the picture.
@@ -104,9 +107,7 @@ NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
 4. **BLE advertising:** short dashes on the Bluetooth LE advertising channels
    37/38/39 (2402/2426/2480 MHz, marked magenta on the axis).
 5. **Channel numbers 1–13,** fixed: 1/6/11 cyan, the rest grey (the airtime
-   per channel is on KANAELE WIFI).
-6. **`best`:** the quietest of channels 1/6/11 by measured airtime, at the foot
-   of the phosphor plot.
+   per channel and the best channel are on KANAELE WIFI).
 
 ### NETZE (networks)
 
@@ -124,7 +125,8 @@ the list pages every 4 s.
 1. Number of networks per channel. 2. Airtime bar (full = 100 %). 3. White
 tick: peak airtime of the last seconds. 4. The quietest of 1/6/11 has a green
 column. 5. Airtime in %. 6. Channel number (fixed, at the bottom). The
-network counts come from the last scan.
+network counts come from the last scan; with periodic scanning (hold right
+2 s) they are renewed every second.
 
 **Airtime colours:** green up to ~15 %, yellow around 40 %, red from 75 %.
 Neighbouring channels overlap, so a busy network on channel 6 also colours
@@ -267,7 +269,11 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 | Button | short | long (1 s) |
 |---|---|---|
 | **Left** | next page | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
-| **Right** | survey ↔ sniffer | survey: full network scan now (PEGEL: previous network) · sniffer: zero · BLE list: clear |
+| **Right** | survey ↔ sniffer | survey: 1–2 s one full network scan, ≥ 2 s periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
+
+In survey mode the right button acts on release: held 1–2 s it scans once,
+held 2 s or longer it switches periodic scanning (a full scan every second)
+on or off.
 
 - **T-Display:** left = GPIO0 button, right = GPIO35 button. Two optional touch
   pads on the header pins do the same: GPIO32 (left) and GPIO33 (right); a wire
@@ -283,7 +289,7 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 | PEGEL WIFI SINGLE | level (coverage) of a single Wi-Fi network |
 | SUCHER BREITBAND / DETEKTOR PEAKS / PEILEN STRONGEST / BLE LISTE | wideband finder / peak detector / bearing on the strongest / BLE list |
 | `Rahmen/s`, `kein Signal`, `lang: Netz` | frames per second, no signal, hold: network |
-| `7 Netze`, `<versteckt>` | 7 networks, hidden network |
+| `7 Netze`, `<versteckt>`, `scan auto` | 7 networks, hidden network, periodic scanning on |
 | `stelle` / `lerne` / `pruefe` / `genullt` / `ohne Basis` | ranging gain / learning / checking / zeroed / not zeroed |
 | `Spitze`, `Treffer/s`, `Bestwert` | peak, hits per second, best value |
 | `aktiv`, `gesamt` | active (heard recently), total |
@@ -495,7 +501,7 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 |---|---|
 | `TDSTAT?` | survey state: page, gain, clipping, frame time, touch readings |
 | `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | switch page / mode / sniffer page |
-| `TDSCAN` | full network scan now |
+| `TDSCAN` / `TDSCANAUTO 0\|1` | full network scan now / periodic scanning off or on |
 | `TDSCANCH c [ms]` | scan only channel `c` (passive for `ms` if given) and list every answer, raw (T-Display) |
 | `TDSN?` / `TDNULL` | finder state / zero the finder |
 | `TDDET?` / `TDDETZERO` | detector state (gain, floor, room, margin, per-slot excess) / zero it |

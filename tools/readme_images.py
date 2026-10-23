@@ -158,15 +158,12 @@ def page_waterfall():
         if random.random() < 0.3:
             x = random.randrange(W)
             d.point((x, y), fill=lut(0.2))
-    # Best channel at the foot of the phosphor plot; fixed channel numbers.
-    tw = d.textlength('best', font=TXT)
-    d.rectangle([ch_x(11) - tw / 2 - P(2), wy - 1 - P(10), ch_x(11) + tw / 2 + P(2), wy - 2], fill=C_BG)
-    text(d, ch_x(11), wy - 1 - P(10), 'best', C_GREEN, anchor='ma')
+    # Fixed channel numbers.
     for ch in range(1, 14):
         text(d, ch_x(ch), ay + P(1), str(ch), C_CYAN if ch in (1, 6, 11) else C_DIM, anchor='ma')
     for f in (2402, 2426, 2480):
         d.rectangle([mhz_x(f) - 2, ay, mhz_x(f) + 2, ay + 1], fill=C_BLE)
-    frame(img, [(None, P(5)), (mhz_x(2424), gy + P(26)), (mhz_x(2437), wy + 60), (mhz_x(2480) - 16, wy + 110), (None, ay + P(6)), (ch_x(11) + 40, wy - P(6))],
+    frame(img, [(None, P(5)), (mhz_x(2424), gy + P(26)), (mhz_x(2437), wy + 60), (mhz_x(2480) - 16, wy + 110), (None, ay + P(6))],
           'page-waterfall.png')
 
 
