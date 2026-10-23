@@ -82,9 +82,10 @@ band, and analyses them on the chip:
 
 ## Survey mode: networks and channel load
 
-The board starts here. **Left button** cycles the three pages.
+The board starts here. **Left button** cycles the five pages: WASSERFALL VOLL →
+NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
 
-### WASSERFALL (waterfall)
+### WASSERFALL VOLL (full waterfall)
 
 <img src="images/page-waterfall.png" width="60%" alt="Waterfall page with numbered parts">
 
@@ -111,7 +112,7 @@ The board starts here. **Left button** cycles the three pages.
 channel. 5. The same as a bar (full = 100 %). With more networks than fit,
 the list pages every 4 s.
 
-### KANAELE (channels)
+### KANAELE WIFI (Wi-Fi channels)
 
 <img src="images/page-channels.png" width="60%" alt="Channels page with numbered parts">
 
@@ -122,6 +123,40 @@ column. 5. Channel number. 6. Airtime in %.
 **Airtime colours:** green up to ~15 %, yellow around 40 %, red from 75 %.
 Neighbouring channels overlap, so a busy network on channel 6 also colours
 channels 3–9.
+
+### KANAELE ZIGBEE (Zigbee channels)
+
+<img src="images/page-zigbee.png" width="60%" alt="Zigbee channels page with numbered parts">
+
+The 802.15.4 channels 11–26 (Zigbee, Thread, Matter; 2 MHz each at
+2405 + 5·(n − 11) MHz). The snapshots alternate between two windows (LO 2422 and
+2462 MHz), so the band-edge channels 11 and 26 are measured too.
+
+1. Channels 15, 20, 25 and 26 (blue column, cyan number) sit between Wi-Fi 1,
+6 and 11 and are the usual choice for a Zigbee network. 2. Level over the noise
+floor (full = 40 dB), coloured by activity. 3. White tick: recent peak level.
+4. Channel number. 5. Activity: share of time the channel was busy, in %.
+
+### PEGEL WIFI SINGLE (coverage of one network)
+
+<img src="images/page-coverage.png" width="60%" alt="Coverage page with numbered parts">
+
+The signal strength of **one** Wi-Fi network, as fast as it sends: for walking
+through a building and finding where coverage ends. The radio stays on that
+network's channel (calibrated there) and takes the RSSI of every frame the
+access point sends: ten beacons a second, plus all of its traffic. No scans and
+no SDR measurements run while this page is open.
+
+The page starts with the strongest network of the NETZE list. **Hold left /
+right** to step to the next / previous network; no fine tapping needed.
+
+1. Network name, channel and MAC. 2. Signal strength in dBm (green strong,
+yellow medium, orange weak; `--` and `kein Signal` after 1 s without a frame).
+3. Frames per second and the minimum / maximum since the network was chosen.
+4. Bar from −100 to −30 dBm with the minimum (grey) and maximum (white) as ticks.
+5. History: the strongest frame per 250 ms over 32 s (here: walking away from
+the access point and back; a gap where nothing was heard). 6. `lang: Netz` =
+hold to change the network.
 
 ---
 
@@ -139,7 +174,7 @@ the room is. Typical signatures:
 
 **Left button (short)** cycles the sniffer pages:
 
-### SUCHER (finder)
+### SUCHER BREITBAND (wideband finder)
 
 Big number (dB above the room or the noise), history bars and a waterfall over
 2400–2484 MHz. It takes snapshots in two windows (LO 2422 and 2462 MHz),
@@ -149,7 +184,7 @@ the band something transmits and suits continuous transmitters.
 The thin seam at 2442 MHz is where the two windows meet; a 40 MHz crystal
 harmonic (2440 MHz) sits right there too and is blanked.
 
-### DETEKTOR (detector)
+### DETEKTOR PEAKS (detector)
 
 <img src="images/page-detector.png" width="60%" alt="Detector page with numbered parts">
 
@@ -171,7 +206,7 @@ in dB over the learned room. 3. Peak since zeroing. 4. Hits per second
 6. The room itself, shown faint (here an access point on channel 6). 7. Axis:
 BLE advertising channels in magenta, Wi-Fi 1/6/11 in cyan.
 
-### PEILEN (bearing)
+### PEILEN STRONGEST (bearing on the strongest signal)
 
 "Warmer/colder": a big number, a bar with a best-value mark (reset when the
 page opens) and an arrow showing whether the signal is getting stronger
@@ -224,8 +259,8 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 
 | Button | short | long (1 s) |
 |---|---|---|
-| **Left** | next page | survey: next colour theme · sniffer: remove zeroing |
-| **Right** | survey ↔ sniffer | survey: full network scan now · sniffer: zero · BLE list: clear |
+| **Left** | next page | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
+| **Right** | survey ↔ sniffer | survey: full network scan now (PEGEL: previous network) · sniffer: zero · BLE list: clear |
 
 - **T-Display:** left = GPIO0 button, right = GPIO35 button. Two optional touch
   pads on the header pins do the same: GPIO32 (left) and GPIO33 (right); a wire
@@ -246,8 +281,10 @@ the list, and the header shows `HOTS`.
 
 | Display | Meaning |
 |---|---|
-| WASSERFALL / NETZE / KANAELE | waterfall / networks / channels |
-| SUCHER / DETEKTOR / PEILEN / BLE LISTE | finder / detector / bearing / BLE list |
+| WASSERFALL VOLL / NETZE / KANAELE WIFI / KANAELE ZIGBEE | full waterfall / networks / Wi-Fi channels / Zigbee channels |
+| PEGEL WIFI SINGLE | level (coverage) of a single Wi-Fi network |
+| SUCHER BREITBAND / DETEKTOR PEAKS / PEILEN STRONGEST / BLE LISTE | wideband finder / peak detector / bearing on the strongest / BLE list |
+| `Rahmen/s`, `kein Signal`, `lang: Netz` | frames per second, no signal, hold: network |
 | `7 Netze`, `<versteckt>` | 7 networks, hidden network |
 | `stelle` / `lerne` / `pruefe` / `genullt` / `ohne Basis` | ranging gain / learning / checking / zeroed / not zeroed |
 | `Spitze`, `Treffer/s`, `Bestwert` | peak, hits per second, best value |
@@ -450,6 +487,8 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 | `TDSN?` / `TDNULL` | finder state / zero the finder |
 | `TDDET?` / `TDDETZERO` | detector state (gain, floor, room, margin, per-slot excess) / zero it |
 | `TDSPEC s [gain]` | detector listens for `s` seconds with the display paused, then prints per channel the strongest power and how often it was 15 dB over the median (for "does this device transmit at all?") |
+| `TDZB?` | Zigbee channels: level over the floor / activity per channel |
+| `TDCOV?` / `TDCOVSEL -1\|0\|1` | coverage page: network, channel, RSSI, min, max, frames/s / choose previous, strongest, next |
 | `TDBLE?` | BLE list: every device with MAC, address type, RSSI, average, max, manufacturer id, packets, age, name |
 
 The ESP-SDR host protocol (`INFO`, `FREQ`, `CAP`, …) and the

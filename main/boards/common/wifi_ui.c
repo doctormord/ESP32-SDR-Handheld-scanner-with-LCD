@@ -102,8 +102,9 @@
 #define GAIN_MIN 46
 #define GAIN_DB_STEP 0.94f
 
-enum { PAGE_WF, PAGE_NETS, PAGE_CHAN, PAGES };
-static const char *const page_name[PAGES] = {"WASSERFALL", "NETZE", "KANAELE"};
+enum { PAGE_WF, PAGE_NETS, PAGE_CHAN, PAGE_ZB, PAGE_COV, PAGES };
+static const char *const page_name[PAGES] = {"WASSERFALL VOLL", "NETZE", "KANAELE WIFI", "KANAELE ZIGBEE",
+                                             "PEGEL WIFI SINGLE"};
 
 static int page;
 static bool auto_cycle = CONFIG_ESP_SDR_PAGE_SECONDS > 0;
@@ -636,27 +637,45 @@ static int best_channel(void) {
     return best;
 }
 
+/* Title row of every page: the title on the left, the tag (page number) on
+ * the right, the status right after the title, shortened rather than drawn
+ * over the tag. Returns where the status ends and the room left after it. */
+static int header_row(uint16_t *s, int y0, int h, const char *title, const char *status, uint16_t sc,
+                      const char *tag, uint16_t tc, int *room) {
+    rect(s, y0, h, 0, 0, W, HDR_H, C_BAR);
+    text(s, y0, h, P(2), P(1), title, C_YELLOW, 1);
+    const int tx = UW - P(2) - text_w(tag, 1);
+    text(s, y0, h, tx, P(1), tag, tc, 1);
+    const int x = P(2) + text_w(title, 1) + P(7);
+    char b[48];
+    snprintf(b, sizeof(b), "%s", status);
+    for (int n = (int)strlen(b); n > 0 && x + text_w(b, 1) > tx - P(5); n--) b[n - 1] = 0;
+    if (b[0]) text(s, y0, h, x, P(1), b, sc, 1);
+    const int end = x + text_w(b, 1);
+    if (room) *room = tx - P(5) - end;
+    return end;
+}
+
 static void draw_header(uint16_t *s, int y0, int h) {
     if (y0 >= HDR_H) return;
-    rect(s, y0, h, 0, 0, W, HDR_H, C_BAR);
     char t[40];
-    text(s, y0, h, P(2), P(1), page_name[page], C_YELLOW, 1);
     const int64_t now = esp_timer_get_time();
     const bool note = now < theme_note_until;
     if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
     else if (scanning) snprintf(t, sizeof(t), "scan..");
     else snprintf(t, sizeof(t), "%d Netze", ap_count < 0 ? 0 : ap_count);
-    text(s, y0, h, P(72), P(1), t, note || scanning ? C_YELLOW : C_CYAN, 1);
-    int best = best_channel();
-    if (best && !note && page != PAGE_NETS) { /* NETZE puts its list position there */
-        snprintf(t, sizeof(t), "best %d", best);
-        text(s, y0, h, P(132), P(1), t, C_GREEN, 1);
-    }
     const bool clipping = !agc_mode && clip_rate > 0.3f;
     char pg[24];
     snprintf(pg, sizeof(pg), "%d/%d", page + 1, PAGES);
     const char *tag = clipping ? "CLIP" : remote != REMOTE_NONE ? "HOTS" : auto_cycle && now >= hold_until ? "AUTO" : pg;
-    text(s, y0, h, UW - P(2) - text_w(tag, 1), P(1), tag, clipping ? C_RED : remote != REMOTE_NONE ? C_CYAN : C_DIM, 1);
+    int room;
+    const int end = header_row(s, y0, h, page_name[page], t, note || scanning ? C_YELLOW : C_CYAN, tag,
+                               clipping ? C_RED : remote != REMOTE_NONE ? C_CYAN : C_DIM, &room);
+    int best = best_channel();
+    if (best && !note && page != PAGE_NETS && page != PAGE_ZB && page != PAGE_COV) {
+        snprintf(t, sizeof(t), "best %d", best);
+        if (text_w(t, 1) + P(6) <= room) text(s, y0, h, end + P(6), P(1), t, C_GREEN, 1);
+    }
 }
 
 /* ---- page: waterfall --------------------------------------------------------- */
@@ -802,6 +821,223 @@ static void chan_strip(uint16_t *s, int y0, int h) {
     }
 }
 
+/* ---- page: Zigbee ------------------------------------------------------------ */
+/* 802.15.4 channels 11-26 (2 MHz each at 2405 + 5 (c - 11) MHz): level over
+ * the floor and activity (share of time busy). The captures alternate
+ * between the sniffer's two windows (LO 2422 / 2462 MHz), so the band-edge
+ * channels 11 and 26 are inside one of them. 15, 20, 25 and 26 sit between
+ * Wi-Fi 1, 6 and 11 (cyan). */
+#define ZB_CH 16
+#define ZB_LVL_DB 40.0f            /* level that fills a bar */
+UI_BSS static chan_t zch[ZB_CH];
+static float zdisp[ZB_CH];
+
+static void zb_dwell(void) {
+    static int w;
+    static int64_t last;
+    const unsigned lo = w ? 2462 : 2422;
+    w ^= 1;
+    float band_mhz[ZB_CH];
+    for (int k = 0; k < ZB_CH; k++) band_mhz[k] = 2405 + 5 * k;
+    sdr_local_tune(lo);
+    sdr_local_set_gain(agc_mode ? -1 : manual_gain);
+    const uint32_t *iq = quiet_capture();
+    const int gain = agc_mode ? GAIN_REF : manual_gain;
+    const float off = gain_offset(gain);
+    const float busy_db = ref < -150 ? -200 : ref + off + DETECT_DB;
+    zb_result_t r;
+    if (!iq || !zb_analyze(iq, CAP_N, 80, lo, band_mhz, ZB_CH, 1, busy_db, &r)) return;
+    caps++;
+    const int64_t now = esp_timer_get_time();
+    const float dt = last ? (now - last) * 1e-6f : 0;
+    last = now;
+    if (!agc_mode) autorange(&r, now);
+    if (!r.clip) track_floor(r.floor - off, agc_mode ? (int)zb_last_gain_mean : gain);
+    for (int k = 0; k < ZB_CH; k++) {
+        if (now > zch[k].hold_at && zch[k].hold > 0) zch[k].hold -= 6 * dt;
+        if (r.peak[k] < -150 || ref < -150) continue;
+        chan_update(&zch[k], r.peak[k] - off - ref, r.busy[k], now);
+    }
+}
+
+static int zb_h(float db) {
+    int v = (int)(db / ZB_LVL_DB * CH_BAR_H + 0.5f);
+    return v < 0 ? 0 : v > CH_BAR_H ? CH_BAR_H : v;
+}
+
+static void zb_strip(uint16_t *s, int y0, int h) {
+    sv_fill(s, W, h, C_BLACK);
+    draw_header(s, y0, h);
+    const int cw = UW / ZB_CH, x0 = (UW - cw * ZB_CH) / 2;
+    char t[8];
+    for (int k = 0; k < ZB_CH; k++) {
+        const int x = x0 + k * cw, c = 11 + k, cx = x + cw / 2;
+        const bool gap = c == 15 || c == 20 || c == 25 || c == 26;
+        zdisp[k] += EASE * (zch[k].now - zdisp[k]);
+        rect(s, y0, h, x + P(1), CH_BAR_Y, cw - P(2), CH_BAR_H, gap ? C_WIFI : C_COL);
+        for (int d = 10; d < (int)ZB_LVL_DB; d += 10)
+            rect(s, y0, h, x + P(1), CH_BAR_Y + CH_BAR_H - zb_h(d), cw - P(2), 1, C_GRID);
+        const int lh = zb_h(zdisp[k]);
+        if (lh) rect(s, y0, h, x + P(2), CH_BAR_Y + CH_BAR_H - lh, cw - P(4), lh, air_colour(zch[k].air));
+        if (zch[k].hold > 1)
+            rect(s, y0, h, x + P(1), CH_BAR_Y + CH_BAR_H - zb_h(zch[k].hold), cw - P(2), P(2), C_WHITE);
+        snprintf(t, sizeof(t), "%d", c);
+        text_c(s, y0, h, cx, CH_NUM_Y, t, gap ? C_CYAN : C_DIM, 1);
+        snprintf(t, sizeof(t), "%u", (unsigned)(zch[k].air * 100 + 0.5f));
+        text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(zch[k].air), 1);
+    }
+}
+
+/* ---- page: coverage -------------------------------------------------------------- */
+/* PEGEL: how strongly one network arrives, as fast as it sends. The radio
+ * stays on the network's channel (sdr_local_watch_start) and takes the RSSI
+ * of each of its frames: beacons ten times a second, plus all its traffic.
+ * The page starts with the strongest network; hold left / right steps to the
+ * next / previous one in the list (no fine tapping needed). No scans and no
+ * SDR captures run meanwhile. */
+#define COV_HIST 128                /* 32 s in 250 ms steps */
+static uint8_t cov_bssid[6];
+static char cov_ssid[33];
+static int cov_ch;
+static bool cov_on, cov_have;
+static float cov_val = -127;
+static int cov_min = 0, cov_max = -127, cov_bucket = -127;
+static int8_t cov_hist[COV_HIST];
+static int cov_head;
+static unsigned cov_frames, cov_fps;
+static int64_t cov_heard_at, cov_bucket_at, cov_fps_at;
+
+static void cov_reset_stats(void) {
+    cov_val = -127;
+    cov_min = 0;
+    cov_max = cov_bucket = -127;
+    for (int i = 0; i < COV_HIST; i++) cov_hist[i] = -127;
+    cov_frames = cov_fps = 0;
+    cov_heard_at = 0;
+}
+
+/* Next (dir 1), previous (-1) or the strongest (0) network of the list. */
+static void cov_pick(int dir) {
+    if (ap_count <= 0) return;
+    int i = 0;
+    if (dir && cov_have) {
+        int cur = -1;
+        for (int k = 0; k < ap_count; k++) if (!memcmp(aps[k].bssid, cov_bssid, 6)) cur = k;
+        i = cur < 0 ? 0 : (cur + dir + ap_count) % ap_count;
+    }
+    memcpy(cov_bssid, aps[i].bssid, 6);
+    snprintf(cov_ssid, sizeof(cov_ssid), "%s", aps[i].ssid[0] ? aps[i].ssid : "<versteckt>");
+    for (char *q = cov_ssid; *q; q++) if ((unsigned char)*q < 0x20 || (unsigned char)*q > 0x7e) *q = '?';
+    cov_ch = aps[i].channel;
+    cov_have = true;
+    cov_reset_stats();
+    if (cov_on) {
+        lock_lcd();
+        td_lcd_idle();
+        cov_on = sdr_local_watch_start(cov_bssid, (unsigned)cov_ch);
+        unlock_lcd();
+    }
+}
+
+static void cov_stop(void) {
+    if (!cov_on) return;
+    lock_lcd();
+    td_lcd_idle();
+    sdr_local_watch_stop();
+    unlock_lcd();
+    cov_on = false;
+    last_at = 0;
+}
+
+static void cov_step(int64_t now) {
+    if (!cov_have) cov_pick(0);
+    if (!cov_have) {vTaskDelay(pdMS_TO_TICKS(20)); return;}
+    if (!cov_on) {
+        lock_lcd();
+        td_lcd_idle();
+        cov_on = sdr_local_watch_start(cov_bssid, (unsigned)cov_ch);
+        unlock_lcd();
+        cov_reset_stats();
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+    int mx, last;
+    float mean;
+    const unsigned n = sdr_local_watch_poll(&mx, &mean, &last);
+    if (n) {
+        /* Mostly the newest frames, so walking shows at once. */
+        cov_val = cov_val < -126 ? mean : cov_val + 0.5f * (mean - cov_val);
+        if (mx > cov_max) cov_max = mx;
+        if (cov_min == 0 || mx < cov_min) cov_min = mx;
+        if (mx > cov_bucket) cov_bucket = mx;
+        cov_heard_at = now;
+        cov_frames += n;
+    }
+    if (now - cov_bucket_at >= 250000) {
+        cov_bucket_at = now;
+        cov_head = (cov_head + 1) % COV_HIST;
+        cov_hist[cov_head] = (int8_t)cov_bucket;
+        cov_bucket = -127;
+    }
+    if (now - cov_fps_at >= 1000000) {cov_fps = cov_frames; cov_frames = 0; cov_fps_at = now;}
+}
+
+static int cov_x(int dbm, int x0, int w) {
+    int v = (dbm + 100) * w / 70;
+    return x0 + (v < 0 ? 0 : v > w - 1 ? w - 1 : v);
+}
+
+static void cov_strip(uint16_t *s, int y0, int h) {
+    sv_fill(s, W, h, C_BLACK);
+    draw_header(s, y0, h);
+    char t[48];
+    const int64_t now = esp_timer_get_time();
+    if (!cov_have) {
+        text(s, y0, h, P(8), P(50), ap_count < 0 ? "Noch kein Scan ..." : "Keine Netze gefunden", C_DIM, 1);
+        return;
+    }
+    const bool live = cov_heard_at && now - cov_heard_at < 1000000;
+    snprintf(t, sizeof(t), "%s", cov_ssid);
+    text(s, y0, h, P(4), P(13), t, C_TEXT, 1);
+    snprintf(t, sizeof(t), "Kanal %d  %02x%02x%02x%02x%02x%02x", cov_ch, cov_bssid[0], cov_bssid[1], cov_bssid[2],
+             cov_bssid[3], cov_bssid[4], cov_bssid[5]);
+    text(s, y0, h, P(4), P(24), t, C_DIM, 1);
+    const int r = (int)(cov_val + (cov_val < 0 ? -0.5f : 0.5f));
+    if (live) snprintf(t, sizeof(t), "%d", r);
+    else snprintf(t, sizeof(t), "--");
+    const uint16_t c = live ? rssi_colour(r) : C_DIM;
+    const int nw = big_text(s, y0, h, P(8), P(36), t, c);
+    text(s, y0, h, P(12) + nw, P(51), "dBm", C_DIM, 1);
+    snprintf(t, sizeof(t), "Rahmen/s %u", cov_fps);
+    text(s, y0, h, UW - P(6) - text_w(t, 1), P(38), t, cov_fps ? C_TEXT : C_DIM, 1);
+    if (cov_max > -127) {
+        snprintf(t, sizeof(t), "min %d  max %d", cov_min, cov_max);
+        text(s, y0, h, UW - P(6) - text_w(t, 1), P(50), t, C_DIM, 1);
+    }
+    if (!live) text(s, y0, h, UW - P(6) - text_w("kein Signal", 1), P(26), "kein Signal", C_ORANGE, 1);
+    /* Bar -100..-30 dBm: now, with the session's min and max as ticks. */
+    const int bx = P(6), by = P(66), bw = UW - P(12), bh = P(10);
+    rect(s, y0, h, bx, by, bw, bh, C_COL);
+    if (live) rect(s, y0, h, bx, by, cov_x(r, 0, bw), bh, c);
+    if (cov_max > -127) {
+        rect(s, y0, h, cov_x(cov_min, bx, bw), by - P(2), P(1), bh + P(4), C_DIM);
+        rect(s, y0, h, cov_x(cov_max, bx, bw), by - P(2), P(2), bh + P(4), C_WHITE);
+    }
+    /* History: 32 s, the strongest frame per 250 ms, -100..-30 dBm. */
+    const int hy = P(82), hh = H - hy - P(12);
+    for (int d = -90; d < -30; d += 10) rect(s, y0, h, 0, hy + hh - (d + 100) * hh / 70, UW, 1, C_GRID);
+    for (int i = 0; i < COV_HIST; i++) {
+        const int v = cov_hist[(cov_head + 1 + i) % COV_HIST];
+        if (v <= -127) continue;
+        int bh2 = (v + 100) * hh / 70;
+        if (bh2 < 1) bh2 = 1;
+        if (bh2 > hh) bh2 = hh;
+        const int x = i * UW / COV_HIST, x2 = (i + 1) * UW / COV_HIST;
+        rect(s, y0, h, x, hy + hh - bh2, x2 - x > 1 ? x2 - x - 1 : 1, bh2, rssi_colour(v));
+    }
+    text(s, y0, h, P(2), H - P(11), "32 s", C_DIM, 1);
+    text(s, y0, h, UW - P(2) - text_w("lang: Netz", 1), H - P(11), "lang: Netz", C_DIM, 1);
+}
+
 /* ---- splash, host ---------------------------------------------------------- */
 
 static void splash_strip(uint16_t *s, int y0, int h) {
@@ -874,7 +1110,8 @@ static void error_strip(uint16_t *s, int y0, int h) {
 #define SN_ADV_HIST P(136)
 
 enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_BLIST, SN_PAGES };
-static const char *const sn_page_name[SN_PAGES] = {"SUCHER", "DETEKTOR", "PEILEN", "BLE LISTE"};
+static const char *const sn_page_name[SN_PAGES] = {"SUCHER BREITBAND", "DETEKTOR PEAKS", "PEILEN STRONGEST",
+                                                   "BLE LISTE"};
 enum { SN_IDLE, SN_LEARN, SN_VERIFY };
 static bool sniffer;
 static int sn_page, sn_state;
@@ -1093,9 +1330,7 @@ static uint16_t sn_level_colour(float db) {
 
 static void sn_header(uint16_t *s, int y0, int h) {
     if (y0 >= HDR_H) return;
-    rect(s, y0, h, 0, 0, W, HDR_H, C_BAR);
-    text(s, y0, h, P(2), P(1), sn_page_name[sn_page], C_YELLOW, 1);
-    char t[32];
+    char t[32], pg[24];
     const int64_t now = esp_timer_get_time();
     if (sn_state == SN_LEARN)
         snprintf(t, sizeof(t), "lerne %d.%ds", (int)((sn_phase_until - now) / 1000000),
@@ -1106,12 +1341,11 @@ static void sn_header(uint16_t *s, int y0, int h) {
         snprintf(t, sizeof(t), "genullt +%.0fdB %d:%02d", sn_margin, age / 60 % 100, age % 60);
     }
     else snprintf(t, sizeof(t), "ohne Basis");
-    if (now < theme_note_until) {
-        snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
-        text(s, y0, h, P(66), P(1), t, C_YELLOW, 1);
-    } else text(s, y0, h, P(66), P(1), t, sn_state != SN_IDLE ? C_YELLOW : sn_based ? C_GREEN : C_ORANGE, 1);
-    snprintf(t, sizeof(t), "S%d/%d", sn_page + 1, SN_PAGES);
-    text(s, y0, h, UW - P(2) - text_w(t, 1), P(1), t, C_DIM, 1);
+    const bool note = now < theme_note_until;
+    if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
+    snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
+    header_row(s, y0, h, sn_page_name[sn_page], t,
+               note || sn_state != SN_IDLE ? C_YELLOW : sn_based ? C_GREEN : C_ORANGE, pg, C_DIM, NULL);
 }
 
 static void sn_axis(uint16_t *s, int y0, int h, int y) {
@@ -1409,9 +1643,7 @@ static void det_step(int64_t now) {
 
 static void det_header(uint16_t *s, int y0, int h) {
     if (y0 >= HDR_H) return;
-    rect(s, y0, h, 0, 0, W, HDR_H, C_BAR);
-    text(s, y0, h, P(2), P(1), "DETEKTOR", C_YELLOW, 1);
-    char t[40];
+    char t[40], pg[24];
     const int64_t now = esp_timer_get_time();
     if (!det_ok) snprintf(t, sizeof(t), "Empfang gestoert");
     else if (det_state == DET_RANGE) snprintf(t, sizeof(t), "stelle G%d", det_gain);
@@ -1423,9 +1655,9 @@ static void det_header(uint16_t *s, int y0, int h) {
         const int age = (int)((now - det_based_at) / 1000000);
         snprintf(t, sizeof(t), "genullt +%.0fdB G%d %d:%02d", det_margin, det_gain, age / 60 % 100, age % 60);
     } else snprintf(t, sizeof(t), "ohne Basis G%d", det_gain);
-    text(s, y0, h, P(66), P(1), t, !det_ok ? C_RED : det_state != SN_IDLE ? C_YELLOW : det_based ? C_GREEN : C_ORANGE, 1);
-    snprintf(t, sizeof(t), "S%d/%d", sn_page + 1, SN_PAGES);
-    text(s, y0, h, UW - P(2) - text_w(t, 1), P(1), t, C_DIM, 1);
+    snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
+    header_row(s, y0, h, sn_page_name[sn_page], t,
+               !det_ok ? C_RED : det_state != SN_IDLE ? C_YELLOW : det_based ? C_GREEN : C_ORANGE, pg, C_DIM, NULL);
 }
 
 #define DET_TOP_H P(40)
@@ -1522,15 +1754,13 @@ static void bl_strip(uint16_t *s, int y0, int h) {
     char t[40];
     const int64_t now = esp_timer_get_time();
     if (y0 < HDR_H) {
-        rect(s, y0, h, 0, 0, W, HDR_H, C_BAR);
-        text(s, y0, h, P(2), P(1), sn_page_name[sn_page], C_YELLOW, 1);
         int fresh = 0;
         for (int i = 0; i < bl_n; i++) fresh += now - bl[i].last_us < BL_STALE_US;
         if (bl_n < 0) snprintf(t, sizeof(t), bl_known ? "kein BLE" : "starte BLE ...");
         else snprintf(t, sizeof(t), "%d aktiv, %d gesamt", fresh, bl_n);
-        text(s, y0, h, P(66), P(1), t, bl_n < 0 ? C_ORANGE : C_GREEN, 1);
-        snprintf(t, sizeof(t), "S%d/%d", sn_page + 1, SN_PAGES);
-        text(s, y0, h, UW - P(2) - text_w(t, 1), P(1), t, C_DIM, 1);
+        char pg[24];
+        snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
+        header_row(s, y0, h, sn_page_name[sn_page], t, bl_n < 0 ? C_ORANGE : C_GREEN, pg, C_DIM, NULL);
     }
     if (bl_n <= 0) {
         text(s, y0, h, P(8), P(50), bl_n < 0 && bl_known ? "BLE fehlt in diesem Build" : "suche ...", C_DIM, 1);
@@ -1594,6 +1824,8 @@ static void draw_frame(void) {
     else switch (page) {
     case PAGE_WF: render(wf_strip, 0, H); break;
     case PAGE_NETS: render(nets_strip, 0, H); break;
+    case PAGE_ZB: render(zb_strip, 0, H); break;
+    case PAGE_COV: render(cov_strip, 0, H); break;
     default: render(chan_strip, 0, H); break;
     }
     td_lcd_idle();
@@ -1687,6 +1919,8 @@ static void handle_keys(int64_t now) {
                 det_meter = det_best = 0;
             } else if (!i && sniffer) {
                 sn_unzero();
+            } else if (!i && page == PAGE_COV) {
+                cov_pick(1);
             } else if (!i) {
                 theme_next(now);
             } else if (sniffer && sn_page == SN_PAGE_BLIST) {
@@ -1695,6 +1929,8 @@ static void handle_keys(int64_t now) {
                 det_zero_start(now);
             } else if (sniffer) {
                 sn_null_start(now);
+            } else if (page == PAGE_COV) {
+                cov_pick(-1);
             } else {
                 full_scan_pending = true;
                 next_scan_at = now; /* runs this frame */
@@ -1940,6 +2176,25 @@ bool board_ui_command(const char *line) {
         }
         return true;
     }
+    if (!strcmp(line, "TDCOV?")) {
+        int n = snprintf(buf, sizeof(buf), "TDCOV on %d ssid '%s' ch %d rssi %.1f min %d max %d fps %u live %d\n",
+                         cov_on, cov_ssid, cov_ch, cov_val, cov_min, cov_max, cov_fps,
+                         cov_heard_at && esp_timer_get_time() - cov_heard_at < 1000000);
+        burst_serial_send(buf, n);
+        return true;
+    }
+    if (!strcmp(line, "TDZB?")) {
+        int n = snprintf(buf, sizeof(buf), "TDZB");
+        for (int k = 0; k < ZB_CH; k++) n += snprintf(buf + n, sizeof(buf) - n, " %d:%.0f/%.0f%%", 11 + k, zch[k].now, zch[k].air * 100);
+        n += snprintf(buf + n, sizeof(buf) - n, "\n");
+        burst_serial_send(buf, n);
+        return true;
+    }
+    if (sscanf(line, "TDCOVSEL %d", &p) == 1) { /* -1, 0, 1: previous, strongest, next */
+        cov_pick(p < 0 ? -1 : p > 0 ? 1 : 0);
+        burst_serial_send("OK\n", 3);
+        return true;
+    }
     if (!strcmp(line, "TDBLE?")) {
         UI_BSS static sdr_local_ble_t l[BL_MAX];
         const int n = sdr_local_ble_list(l, BL_MAX);
@@ -1998,7 +2253,10 @@ bool board_ui_step(bool host_active) {
     /* The BLE start has no receiver: BLE LISTE only. */
     const bool blist = sniffer && sn_page == SN_PAGE_BLIST;
     if (sdr_local_ble_boot() != blist) sn_goto(sn_page);
-    if (!sniffer && next_scan_at && now >= next_scan_at) scan();
+    /* PEGEL keeps the radio on its network's channel; anything else frees it. */
+    const bool cov_page = !sniffer && page == PAGE_COV;
+    if (!cov_page && cov_on) cov_stop();
+    if (!sniffer && !cov_page && next_scan_at && now >= next_scan_at) scan();
 
     /* One capture per step, whatever is shown. */
     const int64_t t0 = esp_timer_get_time();
@@ -2006,6 +2264,8 @@ bool board_ui_step(bool host_active) {
     if (blist) bl_step();
     else if (sniffer && (sn_page == SN_PAGE_DET)) det_step(t0);
     else if (sniffer) sn_dwell();
+    else if (page == PAGE_ZB) zb_dwell();
+    else if (cov_page) cov_step(t0);
     else dwell();
     now = esp_timer_get_time();
     static int64_t row_at, draw_at;
@@ -2014,7 +2274,7 @@ bool board_ui_step(bool host_active) {
         /* DETEKTOR writes its own rows (one per run) into wf. */
         if (blist || (sniffer && sn_page == SN_PAGE_DET)) {}
         else if (sniffer) sn_push_row(now);
-        else wf_push_row();
+        else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
     }
     if (!sniffer) {
         if (auto_cycle && remote == REMOTE_NONE && now >= hold_until && now - page_at > PAGE_US)
