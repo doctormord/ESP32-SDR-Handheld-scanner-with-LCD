@@ -17,6 +17,7 @@
 #define USABLE 0.42f       /* fraction of the sample rate each side of the LO */
 #define SPUR_MHZ 0.25f     /* half width excluded around DC and crystal harmonics */
 #define CLIP_LEVEL 500     /* of 511 */
+#define DC_STEP 4          /* zb_analyze's DC / clipping pass takes every 4th sample */
 
 static float *buf, *win, *avg, *seg, *scratch, *mx;
 static float norm;
@@ -157,7 +158,9 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
     unsigned clipped = 0, gsum = 0;
     int peak = 0;
     const unsigned used = (unsigned)segments * N;
-    for (unsigned j = 0; j < used; j++) {
+    /* DC, gain, peak and clipping from every DC_STEP-th sample: plenty for
+     * these, and this pass cost as much as the conversion for the FFTs. */
+    for (unsigned j = 0; j < used; j += DC_STEP) {
         int i = s10(iq[j]), q = s10(iq[j] >> 10);
         const float k = gk(iq[j]);
         si += i * k; sq += q * k;
@@ -167,11 +170,17 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
         if (b > peak) peak = b;
         if (i >= CLIP_LEVEL || i <= -CLIP_LEVEL || q >= CLIP_LEVEL || q <= -CLIP_LEVEL) clipped++;
     }
-    const float mi = si / used, mq = sq / used;
-    zb_last_gain_mean = (float)gsum / used;
-    out->clip = clipped * 1000 > used;
+    const unsigned looked = used / DC_STEP;
+    const float mi = si / looked, mq = sq / looked;
+    zb_last_gain_mean = (float)gsum / looked;
+    out->clip = clipped * 1000 > looked;
     out->peak_abs = peak;
 
+    int band_n[ZB_MAX_BANDS];
+    for (int b = 0; b < bands; b++) {
+        band_n[b] = 0;
+        for (int k = first[b]; k >= 0 && k <= last[b]; k++) band_n[b] += !spur[k];
+    }
     memset(avg, 0, N * sizeof(float));
     if (maxspec) memset(mx, 0, N * sizeof(float));
     const float occ_thr = busy_db < -150 ? INFINITY : powf(10, (busy_db + 4) / 10) / norm;
@@ -184,7 +193,7 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
             buf[2 * j + 1] = (mq - s10(p[j] >> 10) * k) * win[j];
         }
         dsps_fft2r_fc32(buf, N);
-        dsps_bit_rev_fc32(buf, N);
+        dsps_bit_rev2r_fc32(buf, N);
         for (int j = 0; j < N; j++) {
             int k = (j + N / 2) & (N - 1); /* fftshift */
             const float p = buf[2 * j] * buf[2 * j] + buf[2 * j + 1] * buf[2 * j + 1];
@@ -195,10 +204,12 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
         if (occ) {
             float top = 0;
             int m = 0;
+            /* The median of every other bin is as good a noise estimate and
+             * halves the selection. */
             for (int k = 0; k < N; k++) {
                 if (spur[k]) continue;
                 if (pw[k] > top) top = pw[k];
-                pw_sel[m++] = pw[k];
+                if (k & 1) pw_sel[m++] = pw[k];
             }
             const float noise = m ? select_k(pw_sel, m, m / 2) * zb_occ_snr : 0;
             float thr = occ_thr;
@@ -209,14 +220,8 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
         }
         for (int b = 0; b < bands; b++) {
             float sum = 0;
-            int count = 0;
-            for (int k = first[b]; k >= 0 && k <= last[b]; k++) {
-                if (spur[k]) continue;
-                int j = (k + N / 2) & (N - 1);
-                sum += buf[2 * j] * buf[2 * j] + buf[2 * j + 1] * buf[2 * j + 1];
-                count++;
-            }
-            seg[b * MAX_SEGMENTS + s] = count ? sum / count : 0;
+            for (int k = first[b]; k >= 0 && k <= last[b]; k++) sum += spur[k] ? 0 : pw[k];
+            seg[b * MAX_SEGMENTS + s] = band_n[b] ? sum / band_n[b] : 0;
         }
     }
 
@@ -334,7 +339,7 @@ bool zb_peak_spectrum(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo
             buf[2 * j + 1] = (mq - s10(p[j] >> 10) * k) * win[j];
         }
         dsps_fft2r_fc32(buf, N);
-        dsps_bit_rev_fc32(buf, N);
+        dsps_bit_rev2r_fc32(buf, N);
         if (t < top) {
             for (int j = 0; j < N; j++) {
                 const int k = (j + N / 2) & (N - 1);

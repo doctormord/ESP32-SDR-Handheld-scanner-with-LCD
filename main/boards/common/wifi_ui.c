@@ -73,7 +73,13 @@
 #define C_ORANGE RGB(255, 140, 0)
 #define C_BLE RGB(230, 60, 230)
 
+#if CONFIG_IDF_TARGET_ESP32S3
+#define CAP_N 16128u          /* 63 x 256: 0.2 ms at 80 MS/s, ~19 ms to analyse; longer
+                               * captures listen more per second for the same number
+                               * of pauses in sending the picture */
+#else
 #define CAP_N 8192u           /* 32 x 256: ~0.1 ms at 80 MS/s, ~9 ms to analyse */
+#endif
 #define ROW_US 40000          /* one waterfall row every 40 ms (25 rows/s) */
 #define DRAW_US 20000         /* display refresh: 50 frames/s */
 #define EASE 0.3f             /* displayed values move this share to the target per frame */
@@ -188,7 +194,7 @@ static int fv_wf_head;
 static float band[CHANNELS];
 static float ref = -200;      /* quiet floor at gain 50, dB per bin */
 static int64_t last_at;
-UI_BSS static float spec_tmp[ZB_FFT_N];
+static float spec_tmp[ZB_FFT_N]; /* internal: written per capture by core 0 */
 
 
 static int wifi_mhz(int c) { return 2407 + 5 * c; }
@@ -236,7 +242,7 @@ static void survey_reset(void) {
     ref = -200;
 }
 
-static void glow_add(float off, bool clipped);
+static void glow_add(float off, bool clipped, unsigned lo, float f_lo, float f_hi);
 
 /* One dwell on the window: channel statistics, phosphor and occupancy. */
 static void dwell(void) {
@@ -275,7 +281,7 @@ static void dwell(void) {
         if (r.peak[i] < -150) continue;
         chan_update(&ch[i], r.peak[i] - off - ref, r.busy[i], now);
     }
-    glow_add(off, r.clip);
+    glow_add(off, r.clip, lo, F0, F1);
     unlock_ui();
 }
 
@@ -392,7 +398,7 @@ static int wf_head;
 static uint8_t *glow;          /* GLOW_H x UW intensity, row 0 at the top */
 static uint8_t *glow_disp;     /* the same as drawn: eased and blurred */
 static int64_t glow_at;
-UI_BSS static uint16_t occ_cnt[ZB_FFT_N];
+static uint16_t occ_cnt[ZB_FFT_N]; /* internal: written per segment by core 0 */
 UI_BSS static int16_t col_k0[UW], col_k1[UW]; /* FFT bins behind each column */
 UI_BSS static float col_kf[UW];      /* FFT bin under the column centre, fractional */
 UI_BSS static bool col_spur[UW];      /* blanked in the analysis: show the neighbour */
@@ -429,13 +435,20 @@ static void wf_layout(void) {
  * from its level down, everything fades. The usual level glows hot, rare
  * bursts stay faint. A clipping capture is drawn only within 12 dB of its
  * peak: the rest is distortion. */
-static void glow_add(float off, bool clipped) {
+/* The capture was taken at lo and lights the columns from f_lo to f_hi MHz
+ * (ZIGBEE alternates two windows, each one lights its half). */
+static void glow_add(float off, bool clipped, unsigned lo, float f_lo, float f_hi) {
     if (!glow || ref < -150) return;
-    /* Fill per capture = steady level * (time since the last one) / fade time. */
-    static int64_t last;
+    /* Fill per capture = steady level * (time since the last one at this
+     * LO) / fade time. */
+    static int64_t last[2];
+    static unsigned last_lo[2];
+    const int slot = lo == last_lo[0] ? 0 : lo == last_lo[1] ? 1 : last[0] > last[1];
+    if (lo != last_lo[slot]) {last_lo[slot] = lo; last[slot] = 0;}
     const int64_t now = esp_timer_get_time();
-    float dt = last ? (now - last) * 1e-6f : 0.04f;
-    last = now;
+    float dt = last[slot] ? (now - last[slot]) * 1e-6f : 0.04f;
+    last[slot] = now;
+    const int shift = (int)lroundf(((float)LO_C - (float)lo) / (80.0f / ZB_FFT_N)); /* bins */
     if (dt > 0.2f) dt = 0.2f;
     int fill = (int)(GLOW_STEADY * dt / GLOW_TAU_S + 0.5f);
     if (fill < 1) fill = 1;
@@ -444,17 +457,21 @@ static void glow_add(float off, bool clipped) {
     const float lim = clipped ? top - 12 : -150;
     float prev = -200;
     for (int x = 0; x < UW; x++) {
+        const float f = col_mhz(x);
+        if (f < f_lo || f >= f_hi) continue;
         float m = -200;
-        if (col_spur[x]) m = prev;
+        if (col_spur[x] && !shift) m = prev;
         else {
             /* Between the two nearest bins (no steps a bin wide), and the
              * peak of any bin wholly inside a wide column. */
-            const int k = (int)floorf(col_kf[x]);
+            const float kf = col_kf[x] + shift;
+            const int k = (int)floorf(kf);
             const float a = k >= 0 && k < ZB_FFT_N ? spec_tmp[k] : -200;
             const float b = k + 1 >= 0 && k + 1 < ZB_FFT_N ? spec_tmp[k + 1] : -200;
-            const float t = col_kf[x] - k;
+            const float t = kf - k;
             m = a < -150 ? b : b < -150 ? a : a + t * (b - a);
-            for (int j = col_k0[x] + 1; j < col_k1[x]; j++) if (spec_tmp[j] > m) m = spec_tmp[j];
+            for (int j = col_k0[x] + 1 + shift; j < col_k1[x] + shift; j++)
+                if (j >= 0 && j < ZB_FFT_N && spec_tmp[j] > m) m = spec_tmp[j];
         }
         prev = m;
         if (m < -150 || m < lim) continue;
@@ -797,6 +814,19 @@ static void draw_header(uint16_t *s, int y0, int h) {
 
 /* ---- page: waterfall --------------------------------------------------------- */
 
+/* The phosphor spectrum into rows top .. top + gh (its GLOW_H rows picked to
+ * fit: the channel pages show it in the room left below their bars). */
+static void glow_rows(uint16_t *s, int y0, int h, int top, int gh) {
+    for (int y = y0 > top ? y0 : top; y < y0 + h && y < top + gh; y++) {
+        const uint8_t *src = glow_disp ? glow_disp + (y - top) * GLOW_H / gh * UW : NULL;
+        uint16_t *row = s + (y - y0) * W;
+        for (int x = 0; x < UW; x++) {
+            const uint8_t v = src ? src[x] : 0;
+            row[x] = v ? lut[v] : C_BLACK;
+        }
+    }
+}
+
 static void wf_strip(uint16_t *s, int y0, int h) {
     /* Title, phosphor and waterfall cover their rows: clear only below. */
     if (y0 + h > AXIS_Y) {
@@ -804,16 +834,7 @@ static void wf_strip(uint16_t *s, int y0, int h) {
         sv_fill(s + (a - y0) * W, W, y0 + h - a, C_BLACK);
     }
     draw_header(s, y0, h);
-    /* Phosphor spectrum. */
-    for (int y = y0 > GLOW_Y ? y0 : GLOW_Y; y < y0 + h && y < GLOW_Y + GLOW_H; y++) {
-        const uint8_t *src = glow_disp ? glow_disp + (y - GLOW_Y) * UW : NULL;
-        uint16_t *row = s + (y - y0) * W;
-        for (int x = 0; x < UW; x++) {
-            const uint8_t v = src ? src[x] : 0;
-            row[x] = v ? lut[v] : C_BLACK;
-        }
-
-    }
+    glow_rows(s, y0, h, GLOW_Y, GLOW_H);
     if (y0 <= WF_Y - 1 && y0 + h > WF_Y - 1) rect(s, y0, h, 0, WF_Y - 1, UW, 1, C_BAR);
     /* Occupancy waterfall, newest row on top. */
     for (int y = y0 > WF_Y ? y0 : WF_Y; y < y0 + h && y < AXIS_Y; y++) {
@@ -895,6 +916,11 @@ static void nets_strip(uint16_t *s, int y0, int h) {
 #define CH_PCT_Y (CH_BAR_Y + CH_BAR_H + P(3))   /* airtime / activity in %: changes */
 #define CH_NUM_Y (CH_PCT_Y + P(10))             /* channel numbers: fixed, at the bottom */
 #define CH_FULL 1.0f          /* airtime that fills a bar */
+/* Room below the channel numbers (the JC3248's picture is taller than twice
+ * the T-Display's): the phosphor spectrum goes there. */
+#define CH_GLOW_Y (CH_NUM_Y + P(11))
+#define CH_GLOW_H (H - CH_GLOW_Y)
+#define CH_HAS_GLOW (CH_GLOW_H >= P(12))
 
 static int air_h(float air) {
     int v = (int)(air / CH_FULL * CH_BAR_H + 0.5f);
@@ -939,6 +965,7 @@ static void chan_strip(uint16_t *s, int y0, int h) {
         snprintf(t, sizeof(t), "%u", (unsigned)(fv_air[i] * 100 + 0.5f));
         text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(fv_air[i]), 1);
     }
+    if (CH_HAS_GLOW) glow_rows(s, y0, h, CH_GLOW_Y, CH_GLOW_H);
 }
 
 /* ---- page: Zigbee ------------------------------------------------------------ */
@@ -980,6 +1007,8 @@ static void zb_dwell(void) {
         if (r.peak[k] < -150 || ref < -150) continue;
         chan_update(&zch[k], r.peak[k] - off - ref, r.busy[k], now);
     }
+    /* Each window lights its half of the phosphor (shown under the bars). */
+    glow_add(off, r.clip, lo, lo < LO_C ? F0 : LO_C, lo < LO_C ? LO_C : F1);
     unlock_ui();
 }
 
@@ -1013,6 +1042,7 @@ static void zb_strip(uint16_t *s, int y0, int h) {
         snprintf(t, sizeof(t), "%u", (unsigned)(fv_zair[k] * 100 + 0.5f));
         text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(fv_zair[k]), 1);
     }
+    if (CH_HAS_GLOW) glow_rows(s, y0, h, CH_GLOW_Y, CH_GLOW_H);
 }
 
 /* ---- page: coverage -------------------------------------------------------------- */
@@ -1998,17 +2028,26 @@ static void push_row(int64_t now) {
 
 static void draw_frame(void) {
     const int64_t tr = esp_timer_get_time();
+    /* The phosphor fades without ui_lock: it is a pass over the whole buffer,
+     * and the measurement waited for it (up to 17 ms a capture). A capture's
+     * light landing in the same byte at that moment may get lost or fade
+     * once less; nobody sees that. */
+    glow_fade(tr);
+    /* Hold ui_lock only briefly, and do not let the sending task (higher
+     * priority, same core) cut in while it is held. */
+    const UBaseType_t prio = uxTaskPriorityGet(NULL);
+    vTaskPrioritySet(NULL, configMAX_PRIORITIES - 2);
     lock_ui();
 #ifdef TD_LCD_ASYNC
     /* Frames come about as often as rows are due (ROW_US): one row per frame
      * scrolls evenly; by the clock, frames got none or two now and then. */
     push_row(tr);
 #endif
-    glow_fade(tr);
     chan_ease();
     zb_ease();
     frame_view();
     unlock_ui();
+    vTaskPrioritySet(NULL, prio);
     if (sniffer && sn_page == SN_PAGE_BLIST) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
                         : sn_page == SN_PAGE_DET ? det_strip : sn_peil_strip, 0, H);
