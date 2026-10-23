@@ -48,8 +48,9 @@ void td_lcd_defer(bool on);
 #define TD_LCD_CAN_DEFER 1
 /* Background sending: td_lcd_present() hands the drawn frame to a task of
  * its own (under the caller's display lock) and drawing goes on in a second
- * frame meanwhile. */
-void td_lcd_async_start(void (*lock)(void), void (*unlock)(void), int core);
+ * frame meanwhile. While *waiting is set (an RF capture wants the bus), the
+ * frame pauses between chunks and gives the lock up. */
+void td_lcd_async_start(void (*lock)(void), void (*unlock)(void), volatile bool *waiting, int core);
 void td_lcd_present(void);
 #define TD_LCD_ASYNC 1
 

@@ -34,8 +34,7 @@ describe, such as the browser viewer over USB, still works.
 
 > The pictures in this README are drawn mockups of the real pages, made with
 > [tools/readme_images.py](tools/readme_images.py) after the firmware's layout,
-> with typical data. The on-screen labels are German, see
-> [On-screen words](#on-screen-words).
+> with typical data.
 
 ---
 
@@ -71,15 +70,15 @@ band, and analyses them on the chip:
   transmits there: all Wi-Fi networks including foreign and hidden ones,
   Bluetooth, Zigbee, microwave ovens.
 - **Network names** come from a normal Wi-Fi scan that runs in small pieces
-  between the measurements (every 9 s by default), only while NETZE is shown
+  between the measurements (every 9 s by default), only while NETWORKS is shown
   (and once at start, or on request): a scan stops the picture for a moment, and
   the other pages, best channel included, run on the SDR measurement alone.
   When you carry the board around, **hold the next-page key for 2 s** to switch
-  on periodic scanning: every second one third of the band on WASSERFALL,
-  NETZE and KANAELE WIFI (header: `scan auto`), so the network counts follow
+  on periodic scanning: every second one third of the band on WATERFALL,
+  NETWORKS and CHANNELS WIFI (header: `scan auto`), so the network counts follow
   you. The picture keeps being drawn during a scan (on the second core); only
   the measurement pauses for the 0.15–0.3 s a scan takes. Without periodic
-  scanning (`scan manual`), arriving at WASSERFALL, NETZE or KANAELE WIFI runs
+  scanning (`scan manual`), arriving at WATERFALL, NETWORKS or CHANNELS WIFI runs
   one full scan. The receiver is only
   recalibrated for a scan when it covers channels below the measuring
   frequency.
@@ -93,10 +92,10 @@ band, and analyses them on the chip:
 
 ## Survey mode: networks and channel load
 
-The board starts here. The **next-page key** cycles the five pages: WASSERFALL VOLL →
-NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
+The board starts here. The **next-page key** cycles the five pages: WATERFALL FULL →
+NETWORKS → CHANNELS WIFI → CHANNELS ZIGBEE → LEVEL WIFI SINGLE.
 
-### WASSERFALL VOLL (full waterfall)
+### WATERFALL FULL
 
 <img src="images/page-waterfall.png" width="60%" alt="Waterfall page with numbered parts">
 
@@ -116,9 +115,9 @@ NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
 4. **BLE advertising:** short dashes on the Bluetooth LE advertising channels
    37/38/39 (2402/2426/2480 MHz, marked magenta on the axis).
 5. **Channel numbers 1–13,** fixed: 1/6/11 cyan, the rest grey (the airtime
-   per channel and the best channel are on KANAELE WIFI).
+   per channel and the best channel are on CHANNELS WIFI).
 
-### NETZE (networks)
+### NETWORKS
 
 <img src="images/page-networks.png" width="60%" alt="Networks page with numbered parts">
 
@@ -127,7 +126,7 @@ NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
 channel. 5. The same as a bar (full = 100 %). With more networks than fit,
 the list pages every 4 s.
 
-### KANAELE WIFI (Wi-Fi channels)
+### CHANNELS WIFI
 
 <img src="images/page-channels.png" width="60%" alt="Channels page with numbered parts">
 
@@ -141,7 +140,7 @@ next-page key 2 s) every channel is renewed every 3 s.
 Neighbouring channels overlap, so a busy network on channel 6 also colours
 channels 3–9.
 
-### KANAELE ZIGBEE (Zigbee channels)
+### CHANNELS ZIGBEE
 
 <img src="images/page-zigbee.png" width="60%" alt="Zigbee channels page with numbered parts">
 
@@ -155,7 +154,7 @@ floor (full = 40 dB), coloured by activity. 3. White tick: recent peak level.
 4. Activity: share of time the channel was busy, in %. 5. Channel number
 (fixed, at the bottom).
 
-### PEGEL WIFI SINGLE (coverage of one network)
+### LEVEL WIFI SINGLE (coverage of one network)
 
 <img src="images/page-coverage.png" width="60%" alt="Coverage page with numbered parts">
 
@@ -165,16 +164,16 @@ network's channel (calibrated there) and takes the RSSI of every frame the
 access point sends: ten beacons a second, plus all of its traffic. No scans and
 no SDR measurements run while this page is open.
 
-The page starts with the strongest network of the NETZE list. **Hold the mode
+The page starts with the strongest network of the NETWORKS list. **Hold the mode
 key / the next-page key** to step to the next / previous network; no fine
 tapping needed.
 
 1. Network name, channel and MAC. 2. Signal strength in dBm (green strong,
-yellow medium, orange weak; `--` and `kein Signal` after 1 s without a frame).
+yellow medium, orange weak; `--` and `no signal` after 1 s without a frame).
 3. Frames per second and the minimum / maximum since the network was chosen.
 4. Bar from −100 to −30 dBm with the minimum (grey) and maximum (white) as ticks.
 5. History: the strongest frame per 250 ms over 32 s (here: walking away from
-the access point and back; a gap where nothing was heard). 6. `lang: Netz` =
+the access point and back; a gap where nothing was heard). 6. `hold: network` =
 hold to change the network.
 
 ---
@@ -193,7 +192,7 @@ the room is. Typical signatures:
 
 The **next-page key (short)** cycles the sniffer pages:
 
-### SUCHER BREITBAND (wideband finder)
+### FINDER WIDEBAND
 
 Big number (dB above the room or the noise), history bars and a waterfall over
 2400–2484 MHz. It takes snapshots in two windows (LO 2422 and 2462 MHz),
@@ -203,7 +202,7 @@ the band something transmits and suits continuous transmitters.
 The thin seam at 2442 MHz is where the two windows meet; a 40 MHz crystal
 harmonic (2440 MHz) sits right there too and is blanked.
 
-### DETEKTOR PEAKS (detector)
+### DETECTOR PEAKS
 
 <img src="images/page-detector.png" width="60%" alt="Detector page with numbered parts">
 
@@ -225,7 +224,7 @@ in dB over the learned room. 3. Peak since zeroing. 4. Hits per second
 6. The room itself, shown faint (here an access point on channel 6). 7. Axis:
 BLE advertising channels in magenta, Wi-Fi 1/6/11 in cyan.
 
-### PEILEN STRONGEST (bearing on the strongest signal)
+### BEARING STRONGEST
 
 "Warmer/colder": a big number, a bar with a best-value mark (reset when the
 page opens) and an arrow showing whether the signal is getting stronger
@@ -233,7 +232,7 @@ page opens) and an arrow showing whether the signal is getting stronger
 of your chest and turn slowly. Your body damps signals from behind by 10–20 dB,
 so the source is *in front of you* where the number peaks.
 
-### BLE LISTE (BLE device list, JC3248 only)
+### BLE LIST (JC3248 only)
 
 <img src="images/page-ble-list.png" width="60%" alt="BLE list page with numbered parts">
 
@@ -260,17 +259,17 @@ MAC address every few minutes and then appear as a new entry.
 **Next-page key long** zeroes the current sniffer page. Keep the board still for
 6–15 s:
 
-1. **`stelle G..`** (detector only): sets a fixed gain so the room's strongest
+1. **`ranging G..`** (detector only): sets a fixed gain so the room's strongest
    signal sits 10–35 dB below full scale.
-2. **`lerne`:** learns the *highest* level the room reaches, per frequency.
-3. **`pruefe +2dB`:** with 2 dB over that maximum, it counts how many pixels
+2. **`learning`:** learns the *highest* level the room reaches, per frequency.
+3. **`checking +2dB`:** with 2 dB over that maximum, it counts how many pixels
    light up in the unchanged room. Above 0.3 % the margin rises by 2 dB and it
    checks again (a CFAR, as in radar).
-4. **`genullt +4dB`:** done, with the margin this room needed.
+4. **`zeroed +4dB`:** done, with the margin this room needed.
 
 The reference then stays fixed (otherwise a device you stand next to would be
-learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
-**Mode key long** removes the zeroing (`ohne Basis`).
+learned away). The header shows margin and age, e.g. `zeroed +4dB 2:15`.
+**Mode key long** removes the zeroing (`no baseline`).
 
 ---
 
@@ -285,8 +284,8 @@ There are two keys:
 
 | Key | short | long (1 s) |
 |---|---|---|
-| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WASSERFALL / KANAELE WIFI: periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
-| **Mode** | survey ↔ sniffer | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
+| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WATERFALL / CHANNELS WIFI: periodic scanning on/off (LEVEL: previous network) · sniffer: zero · BLE list: clear |
+| **Mode** | survey ↔ sniffer | survey: next colour theme (LEVEL: next network) · sniffer: remove zeroing |
 
 - A touch that drops out for less than 0.12 s during a long hold still counts
   as held.
@@ -296,27 +295,11 @@ There are two keys:
   two steps it runs over 2 s, with a white mark at 1 s (scan) and the goal at
   2 s (periodic scanning on/off).
 
-### On-screen words
-
-| Display | Meaning |
-|---|---|
-| WASSERFALL VOLL / NETZE / KANAELE WIFI / KANAELE ZIGBEE | full waterfall / networks / Wi-Fi channels / Zigbee channels |
-| PEGEL WIFI SINGLE | level (coverage) of a single Wi-Fi network |
-| SUCHER BREITBAND / DETEKTOR PEAKS / PEILEN STRONGEST / BLE LISTE | wideband finder / peak detector / bearing on the strongest / BLE list |
-| `Rahmen/s`, `kein Signal`, `lang: Netz` | frames per second, no signal, hold: network |
-| `7 Netze`, `<versteckt>`, `scan auto` / `scan manual` | 7 networks, hidden network, periodic scanning on / off |
-| `stelle` / `lerne` / `pruefe` / `genullt` / `ohne Basis` | ranging gain / learning / checking / zeroed / not zeroed |
-| `Spitze`, `Treffer/s`, `Bestwert` | peak, hits per second, best value |
-| `aktiv`, `gesamt` | active (heard recently), total |
-| `Thema: …` | colour theme |
-
----
-
 ## Colour themes
 
-**Mode key long** in survey mode cycles Klassisch (classic), Inferno,
-Viridis, Turbo, Phosphor (green), Nacht (night, red) and Mono. The theme
-applies to all waterfalls and the spectrum; Nacht turns the whole picture red
+**Mode key long** in survey mode cycles Classic, Inferno,
+Viridis, Turbo, Phosphor (green), Night (red) and Mono. The theme
+applies to all waterfalls and the spectrum; Night turns the whole picture red
 (text, bars and header too), for dark-adapted eyes. Its name shows in the header for
 2 s; then it is saved in NVS and restored at the next start.
 
@@ -471,12 +454,23 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
 
 ### Guition JC3248W535 (ESP32-S3)
 
+- **PSRAM and flash run at 120 MHz** (instead of 80), as in the vendor's own
+  demos (their "qio_opi" Arduino libraries); it gives about 3 frames/s. Octal
+  PSRAM at 120 MHz is experimental in ESP-IDF: Espressif warns that the chip
+  may crash when its temperature drifts by ~20 °C from power-on, and IDF's
+  automatic re-tuning via the temperature sensor refuses this board's Boya
+  flash. In daily use it has been stable. After a software restart (opening or
+  leaving the BLE list) the USB serial port may stay silent until the board is
+  unplugged once; the board itself runs on. To go back to 80 MHz, delete the
+  120 MHz block at the end of `sdkconfig.defaults.jc3248` (and the build
+  folder's `sdkconfig`).
 - Display AXS15231B, 320×480 portrait, on QSPI (SPI2): CS 45, SCK 47,
   D0–D3 = 21/48/40/39, backlight 1. It runs at 40 MHz because the pins go
   through the GPIO matrix; 80 MHz showed scan lines.
 - Runs on both cores: core 0 measures, core 1 draws the next picture into one
   of two PSRAM frames while the other one is being sent (a task of its own,
-  which only waits for a capture); about 22 frames/s on WASSERFALL. The data
+  which pauses between two chunks whenever a capture waits); about 25
+  frames/s and 49 captures/s on WATERFALL FULL. The data
   cache uses 64-byte lines (`sdkconfig.defaults.jc3248`): drawing into PSRAM
   and reading it back across rows for the panel misses half as often. (ESP-SDR's
   bare-metal core-1 helper for SPEC streaming to a host is off then; SPEC
@@ -538,11 +532,11 @@ holds the radio, the display shows that and pauses.
   LTE/5G, NFC or a smartwatch's other radios are invisible to it. Broadband
   analogue RF detectors react to all of those.
 - **Short, rare transmissions** (a connected BLE watch that only syncs now and
-  then) can stay below the room's Wi-Fi in the SDR pages. Use **BLE LISTE**: it
+  then) can stay below the room's Wi-Fi in the SDR pages. Use **BLE LIST**: it
   decodes advertising and gets an RSSI per device.
 - **T-Display:** no BLE list (no room in the ESP32 build); the detector there
   uses back-to-back snapshots instead of a gapless ring.
-- **BLE LISTE** restarts the JC3248 when you open or leave it (see above).
+- **BLE LIST** restarts the JC3248 when you open or leave it (see above).
 - The S3's gain table is not linear; the detector therefore ranges a fixed gain
   instead of using the AGC.
 

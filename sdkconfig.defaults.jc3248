@@ -66,3 +66,15 @@ CONFIG_BT_NIMBLE_MAX_EXT_ADV_INSTANCES=1
 # The UI draws into PSRAM and the display driver reads it back across
 # rows: 64-byte cache lines halve the misses (about +1.5 frames/s).
 CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# PSRAM (octal) and flash at 120 MHz, as in the vendor's demos (their
+# "qio_opi" Arduino libraries): about +3 frames/s on WATERFALL FULL.
+# Octal PSRAM at 120 MHz is experimental in ESP-IDF: Espressif warns that it
+# may crash when the temperature drifts by ~20 C from power-on. The automatic
+# re-tuning (SPIRAM_TIMING_TUNING_POINT_VIA_TEMPERATURE_SENSOR) refuses this
+# board's Boya flash. Remove these lines to go back to 80 MHz.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_SPIRAM_SPEED_120M=y
+CONFIG_ESPTOOLPY_FLASHFREQ_120M=y
+CONFIG_SPI_FLASH_HPM_ENA=y
+CONFIG_BOOTLOADER_FLASH_DC_AWARE=y

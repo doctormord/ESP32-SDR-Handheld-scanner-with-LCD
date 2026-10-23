@@ -1,12 +1,12 @@
 /* Wi-Fi survey and sniffer UI of the T-Display and the JC3248. Survey pages:
- *   WASSERFALL VOLL   phosphor spectrum over an occupancy waterfall
+ *   WATERFALL FULL   phosphor spectrum over an occupancy waterfall
  *                     2400-2484 MHz, channel 1-13 grid, BLE advertising
  *                     channels marked, best of 1/6/11 at the plot's foot
- *   NETZE             networks seen: channel, SSID, RSSI and the measured
+ *   NETWORKS             networks seen: channel, SSID, RSSI and the measured
  *                     airtime of their channel
- *   KANAELE WIFI      per channel: airtime bar with peak, networks, best
- *   KANAELE ZIGBEE    802.15.4 channels 11-26: level and activity
- *   PEGEL WIFI SINGLE RSSI of one network, every frame it sends
+ *   CHANNELS WIFI      per channel: airtime bar with peak, networks, best
+ *   CHANNELS ZIGBEE    802.15.4 channels 11-26: level and activity
+ *   LEVEL WIFI SINGLE RSSI of one network, every frame it sends
  * Sniffer pages (finder, detector, bearing, BLE list) further down.
  * Every page keeps measuring: each frame dwells on one 80 MS/s window (LO
  * 2442 MHz, 2408-2476 usable) and analyses the same snapshots twice, as burst-aware
@@ -19,7 +19,7 @@
  * Bluetooth, Zigbee, microwave ovens), 100 % minus it is what is left.
  * SSIDs come from normal Wi-Fi scans of a few channels at a time (the radio
  * cannot capture meanwhile, so the picture stops for a moment); they run in
- * the background only while NETZE is shown, once at start and on request. A
+ * the background only while NETWORKS is shown, once at start and on request. A
  * network that is missed twice in a row drops out of the list. A full sweep
  * takes CONFIG_ESP_SDR_SCAN_INTERVAL_S.
  * Inputs (see handle_keys): left = next page, held: colour theme or the
@@ -115,8 +115,8 @@ static volatile int64_t key_down_at[2], key_up_at[2];
 #define GAIN_DB_STEP 0.94f
 
 enum { PAGE_WF, PAGE_NETS, PAGE_CHAN, PAGE_ZB, PAGE_COV, PAGES };
-static const char *const page_name[PAGES] = {"WASSERFALL VOLL", "NETZE", "KANAELE WIFI", "KANAELE ZIGBEE",
-                                             "PEGEL WIFI SINGLE"};
+static const char *const page_name[PAGES] = {"WATERFALL FULL", "NETWORKS", "CHANNELS WIFI", "CHANNELS ZIGBEE",
+                                             "LEVEL WIFI SINGLE"};
 
 static int page;
 static bool auto_cycle = CONFIG_ESP_SDR_PAGE_SECONDS > 0;
@@ -146,8 +146,13 @@ static void lock_ui(void) { if (ui_lock) xSemaphoreTake(ui_lock, portMAX_DELAY);
 static void unlock_ui(void) { if (ui_lock) xSemaphoreGive(ui_lock); }
 
 /* One capture with the display quiet. */
+/* Set while a capture waits for the display lock: background sending pauses
+ * between two chunks for it (TD_LCD_ASYNC). */
+static volatile bool capture_waiting;
 static const uint32_t *quiet_capture_n(unsigned n) {
+    capture_waiting = true;
     lock_lcd();
+    capture_waiting = false;
     td_lcd_idle();
     const int64_t tc = esp_timer_get_time();
     const uint32_t *iq = sdr_local_capture(n, 0);
@@ -281,12 +286,12 @@ static void dwell(void) {
  * two seconds later and restored at start. */
 typedef struct { const char *name; uint8_t n; uint8_t stop[6][3]; } theme_t;
 static const theme_t themes[] = {
-    {"Klassisch", 6, {{0, 0, 30}, {0, 0, 150}, {0, 170, 220}, {240, 230, 0}, {255, 40, 0}, {255, 255, 255}}},
+    {"Classic", 6, {{0, 0, 30}, {0, 0, 150}, {0, 170, 220}, {240, 230, 0}, {255, 40, 0}, {255, 255, 255}}},
     {"Inferno", 6, {{20, 8, 50}, {70, 12, 105}, {140, 35, 105}, {215, 75, 65}, {250, 165, 20}, {252, 255, 164}}},
     {"Viridis", 5, {{50, 10, 75}, {59, 82, 139}, {33, 145, 140}, {94, 201, 98}, {253, 231, 37}}},
     {"Turbo", 6, {{48, 18, 59}, {70, 134, 251}, {27, 229, 181}, {164, 252, 60}, {251, 128, 34}, {180, 20, 5}}},
     {"Phosphor", 4, {{0, 30, 8}, {0, 90, 25}, {40, 210, 70}, {210, 255, 210}}},
-    {"Nacht", 3, {{30, 0, 0}, {120, 0, 0}, {255, 70, 30}}},
+    {"Night", 3, {{30, 0, 0}, {120, 0, 0}, {255, 70, 30}}},
     {"Mono", 3, {{25, 25, 25}, {130, 130, 130}, {255, 255, 255}}},
 };
 #define THEMES ((int)(sizeof(themes) / sizeof(themes[0])))
@@ -542,7 +547,7 @@ static int ap_count = -1;      /* -1: no scan yet */
 static uint8_t ap_per_ch[CHANNELS + 2];
 static int scan_part;
 /* Periodic scanning (survey, hold right 2 s): every SCAN_AUTO_US one third
- * of the band on WASSERFALL, NETZE and KANAELE WIFI, each channel renewed
+ * of the band on WATERFALL, NETWORKS and CHANNELS WIFI, each channel renewed
  * every 3 s, so the counts follow when the board is carried around. */
 #define SCAN_AUTO_US 1000000
 static bool scan_auto;
@@ -605,7 +610,7 @@ static void night_tint(uint16_t *s, int n) {
 }
 
 static void render(strip_fn fn, int top, int bottom) {
-    const bool night = !strcmp(themes[theme].name, "Nacht");
+    const bool night = !strcmp(themes[theme].name, "Night");
     for (int y = top; y < bottom; y += SH) {
         int h = bottom - y < SH ? bottom - y : SH;
         uint16_t *s = td_lcd_strip_at(y);
@@ -773,11 +778,11 @@ static void draw_header(uint16_t *s, int y0, int h) {
     char t[40];
     const int64_t now = esp_timer_get_time();
     const bool note = now < theme_note_until;
-    if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
+    if (note) snprintf(t, sizeof(t), "Theme: %s", themes[theme].name);
     else if (scanning) snprintf(t, sizeof(t), "scan..");
     else if (page == PAGE_ZB) t[0] = 0;
-    else snprintf(t, sizeof(t), "%d Netze", ap_count < 0 ? 0 : ap_count);
-    /* Scan mode only where it can be chosen (NETZE always scans). */
+    else snprintf(t, sizeof(t), "%d APs", ap_count < 0 ? 0 : ap_count);
+    /* Scan mode only where it can be chosen (NETWORKS always scans). */
     if (page == PAGE_WF || page == PAGE_CHAN) {
         header_mode = scan_auto ? "scan auto" : "scan manual";
         header_mode_c = scan_auto ? C_GREEN : C_DIM;
@@ -821,7 +826,7 @@ static void wf_strip(uint16_t *s, int y0, int h) {
         }
     }
     /* Channel numbers under the waterfall, fixed: 1, 6, 11 cyan, the rest grey
-     * (the airtime is on KANAELE WIFI). */
+     * (the airtime is on CHANNELS WIFI). */
     if (y0 + h > AXIS_Y) {
         char t[4];
         for (int c = 1; c <= CHANNELS; c++) {
@@ -848,7 +853,7 @@ static void nets_strip(uint16_t *s, int y0, int h) {
     draw_header(s, y0, h);
     char t[48];
     if (ap_count <= 0) {
-        text(s, y0, h, P(8), P(50), ap_count < 0 ? "Noch kein Scan ..." : "Keine Netze gefunden", C_DIM, 1);
+        text(s, y0, h, P(8), P(50), ap_count < 0 ? "No scan yet ..." : "No networks found", C_DIM, 1);
         return;
     }
     /* The list may have shrunk since the last page flip. */
@@ -861,7 +866,7 @@ static void nets_strip(uint16_t *s, int y0, int h) {
         snprintf(t, sizeof(t), "%d", c);
         text(s, y0, h, P(12) - text_w(t, 1), y, t, c == 1 || c == 6 || c == 11 ? C_CYAN : C_DIM, 1);
         char name[NET_SSID + 1];
-        snprintf(name, sizeof(name), "%s", a->ssid[0] ? a->ssid : "<versteckt>");
+        snprintf(name, sizeof(name), "%s", a->ssid[0] ? a->ssid : "<hidden>");
         for (char *p = name; *p; p++) if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e) *p = '?';
         text(s, y0, h, P(15), y, name, a->ssid[0] ? C_TEXT : C_DIM, 1);
         snprintf(t, sizeof(t), "%d", a->rssi);
@@ -1011,7 +1016,7 @@ static void zb_strip(uint16_t *s, int y0, int h) {
 }
 
 /* ---- page: coverage -------------------------------------------------------------- */
-/* PEGEL: how strongly one network arrives, as fast as it sends. The radio
+/* LEVEL: how strongly one network arrives, as fast as it sends. The radio
  * stays on the network's channel (sdr_local_watch_start) and takes the RSSI
  * of each of its frames: beacons ten times a second, plus all its traffic.
  * The page starts with the strongest network; hold left / right steps to the
@@ -1054,7 +1059,7 @@ static void cov_pick(int dir) {
     }
     lock_ui();
     memcpy(cov_bssid, aps[i].bssid, 6);
-    snprintf(cov_ssid, sizeof(cov_ssid), "%s", aps[i].ssid[0] ? aps[i].ssid : "<versteckt>");
+    snprintf(cov_ssid, sizeof(cov_ssid), "%s", aps[i].ssid[0] ? aps[i].ssid : "<hidden>");
     for (char *q = cov_ssid; *q; q++) if ((unsigned char)*q < 0x20 || (unsigned char)*q > 0x7e) *q = '?';
     cov_ch = aps[i].channel;
     cov_have = true;
@@ -1123,13 +1128,13 @@ static void cov_strip(uint16_t *s, int y0, int h) {
     char t[48];
     const int64_t now = esp_timer_get_time();
     if (!cov_have) {
-        text(s, y0, h, P(8), P(50), ap_count < 0 ? "Noch kein Scan ..." : "Keine Netze gefunden", C_DIM, 1);
+        text(s, y0, h, P(8), P(50), ap_count < 0 ? "No scan yet ..." : "No networks found", C_DIM, 1);
         return;
     }
     const bool live = fv_cov_heard_at && now - fv_cov_heard_at < 1000000;
     snprintf(t, sizeof(t), "%s", cov_ssid);
     text(s, y0, h, P(4), P(13), t, C_TEXT, 1);
-    snprintf(t, sizeof(t), "Kanal %d  %02x%02x%02x%02x%02x%02x", cov_ch, cov_bssid[0], cov_bssid[1], cov_bssid[2],
+    snprintf(t, sizeof(t), "Channel %d  %02x%02x%02x%02x%02x%02x", cov_ch, cov_bssid[0], cov_bssid[1], cov_bssid[2],
              cov_bssid[3], cov_bssid[4], cov_bssid[5]);
     text(s, y0, h, P(4), P(24), t, C_DIM, 1);
     const int r = (int)(fv_cov_val + (fv_cov_val < 0 ? -0.5f : 0.5f));
@@ -1138,13 +1143,13 @@ static void cov_strip(uint16_t *s, int y0, int h) {
     const uint16_t c = live ? rssi_colour(r) : C_DIM;
     const int nw = big_text(s, y0, h, P(8), P(36), t, c);
     text(s, y0, h, P(12) + nw, P(51), "dBm", C_DIM, 1);
-    snprintf(t, sizeof(t), "Rahmen/s %u", fv_cov_fps);
+    snprintf(t, sizeof(t), "Frames/s %u", fv_cov_fps);
     text(s, y0, h, UW - P(6) - text_w(t, 1), P(38), t, fv_cov_fps ? C_TEXT : C_DIM, 1);
     if (fv_cov_max > -127) {
         snprintf(t, sizeof(t), "min %d  max %d", fv_cov_min, fv_cov_max);
         text(s, y0, h, UW - P(6) - text_w(t, 1), P(50), t, C_DIM, 1);
     }
-    if (!live) text(s, y0, h, UW - P(6) - text_w("kein Signal", 1), P(26), "kein Signal", C_ORANGE, 1);
+    if (!live) text(s, y0, h, UW - P(6) - text_w("no signal", 1), P(26), "no signal", C_ORANGE, 1);
     /* Bar -100..-30 dBm: now, with the session's min and max as ticks. */
     const int bx = P(6), by = P(66), bw = UW - P(12), bh = P(10);
     rect(s, y0, h, bx, by, bw, bh, C_COL);
@@ -1166,7 +1171,7 @@ static void cov_strip(uint16_t *s, int y0, int h) {
         rect(s, y0, h, x, hy + hh - bh2, x2 - x > 1 ? x2 - x - 1 : 1, bh2, rssi_colour(v));
     }
     text(s, y0, h, P(2), H - P(11), "32 s", C_DIM, 1);
-    text(s, y0, h, UW - P(2) - text_w("lang: Netz", 1), H - P(11), "lang: Netz", C_DIM, 1);
+    text(s, y0, h, UW - P(2) - text_w("hold: network", 1), H - P(11), "hold: network", C_DIM, 1);
 }
 
 /* ---- splash, host ---------------------------------------------------------- */
@@ -1176,10 +1181,10 @@ static void splash_strip(uint16_t *s, int y0, int h) {
     static const char *const lines[] = {
         "Wi-Fi SDR  (esp-sdr-glow)",
         "",
-        "Balken/% = belegte Airtime",
-        "Links:  naechste Seite",
-        "Rechts: Netze <-> Sucher",
-        "  lang: Scan / Sucher nullen",
+        "Bars/% = airtime in use",
+        "Next-page key: next page",
+        "Mode key: survey <-> sniffer",
+        "  hold: scan / zero / theme",
     };
     text(s, y0, h, P(6), P(6), lines[0], C_YELLOW, 1);
     for (unsigned i = 1; i < sizeof(lines) / sizeof(lines[0]); i++)
@@ -1188,12 +1193,12 @@ static void splash_strip(uint16_t *s, int y0, int h) {
 
 static void host_strip(uint16_t *s, int y0, int h) {
     sv_fill(s, W, h, C_BAR);
-    text(s, y0, h, P(4), P(1), "HOST verbunden - pausiert", C_CYAN, 1);
+    text(s, y0, h, P(4), P(1), "HOST connected - paused", C_CYAN, 1);
 }
 
 static void error_strip(uint16_t *s, int y0, int h) {
     sv_fill(s, W, h, C_RED);
-    text(s, y0, h, P(4), P(1), "Speicher/FFT-Init fehlgeschlagen", C_WHITE, 1);
+    text(s, y0, h, P(4), P(1), "Memory/FFT init failed", C_WHITE, 1);
 }
 
 /* ---- sniffer: find nearby transmitters (exam rooms) ----------------------- */
@@ -1240,8 +1245,8 @@ static void error_strip(uint16_t *s, int y0, int h) {
 #define SN_ADV_HIST P(136)
 
 enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_BLIST, SN_PAGES };
-static const char *const sn_page_name[SN_PAGES] = {"SUCHER BREITBAND", "DETEKTOR PEAKS", "PEILEN STRONGEST",
-                                                   "BLE LISTE"};
+static const char *const sn_page_name[SN_PAGES] = {"FINDER WIDEBAND", "DETECTOR PEAKS", "BEARING STRONGEST",
+                                                   "BLE LIST"};
 enum { SN_IDLE, SN_LEARN, SN_VERIFY };
 static bool sniffer;
 static int sn_page, sn_state;
@@ -1254,7 +1259,7 @@ UI_BSS static float sn_max[UW];               /* room maximum per column while l
 static float sn_margin;
 static bool sn_based;
 static int64_t sn_based_at;            /* when the zeroing finished */
-static float sn_fast, sn_slow, sn_best; /* PEILEN: row peak, quick and slow average, best */
+static float sn_fast, sn_slow, sn_best; /* BEARING: row peak, quick and slow average, best */
 static int64_t sn_phase_until;
 static unsigned sn_v_lit, sn_v_px, sn_tries;
 static float sn_meter, sn_hist_max, sn_activity;
@@ -1305,7 +1310,7 @@ static void sn_unzero(void) {
     sn_best = 0;
 }
 
-/* BLE LISTE runs in a start of its own (sdr_local_reboot): going to it or
+/* BLE LIST runs in a start of its own (sdr_local_reboot): going to it or
  * leaving it restarts the board, with a note on the screen meanwhile. */
 static const char *reboot_note;
 static void reboot_strip(uint16_t *s, int y0, int h) {
@@ -1323,8 +1328,8 @@ static void reboot_to(unsigned mode, unsigned page, const char *note) {
 
 static void sn_goto(int p) {
     const bool ble = sdr_local_ble_boot();
-    if (p == SN_PAGE_BLIST && !ble) reboot_to(SDR_BOOT_BLE, 0, "starte BLE ...");
-    if (p != SN_PAGE_BLIST && ble) reboot_to(SDR_BOOT_SNIFFER, (unsigned)p, "starte Empfaenger ...");
+    if (p == SN_PAGE_BLIST && !ble) reboot_to(SDR_BOOT_BLE, 0, "starting BLE ...");
+    if (p != SN_PAGE_BLIST && ble) reboot_to(SDR_BOOT_SNIFFER, (unsigned)p, "starting receiver ...");
     sn_page = p;
     if (sn_page == SN_PAGE_PEIL) sn_best = 0;
 }
@@ -1336,7 +1341,7 @@ static void sn_next_page(void) {
 }
 
 static void sn_enter(bool on) {
-    if (!on && sdr_local_ble_boot()) reboot_to(SDR_BOOT_NORMAL, 0, "starte Empfaenger ...");
+    if (!on && sdr_local_ble_boot()) reboot_to(SDR_BOOT_NORMAL, 0, "starting receiver ...");
     sniffer = on;
     sn_page = SN_PAGE_FIND;
     if (sn_state != SN_IDLE) {sn_state = SN_IDLE; sn_based = false;}
@@ -1468,16 +1473,16 @@ static void sn_header(uint16_t *s, int y0, int h) {
     char t[32], pg[24];
     const int64_t now = esp_timer_get_time();
     if (sn_state == SN_LEARN)
-        snprintf(t, sizeof(t), "lerne %d.%ds", (int)((sn_phase_until - now) / 1000000),
+        snprintf(t, sizeof(t), "learning %d.%ds", (int)((sn_phase_until - now) / 1000000),
                  (int)((sn_phase_until - now) / 100000 % 10));
-    else if (sn_state == SN_VERIFY) snprintf(t, sizeof(t), "pruefe +%.0fdB", sn_margin);
+    else if (sn_state == SN_VERIFY) snprintf(t, sizeof(t), "checking +%.0fdB", sn_margin);
     else if (sn_based) {
         const int age = (int)((now - sn_based_at) / 1000000);
-        snprintf(t, sizeof(t), "genullt +%.0fdB %d:%02d", sn_margin, age / 60 % 100, age % 60);
+        snprintf(t, sizeof(t), "zeroed +%.0fdB %d:%02d", sn_margin, age / 60 % 100, age % 60);
     }
-    else snprintf(t, sizeof(t), "ohne Basis");
+    else snprintf(t, sizeof(t), "no baseline");
     const bool note = now < theme_note_until;
-    if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
+    if (note) snprintf(t, sizeof(t), "Theme: %s", themes[theme].name);
     snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
     header_row(s, y0, h, sn_page_name[sn_page], t,
                note || sn_state != SN_IDLE ? C_YELLOW : sn_based ? C_GREEN : C_ORANGE, pg, C_DIM, NULL);
@@ -1526,7 +1531,7 @@ static void sn_find_strip(uint16_t *s, int y0, int h) {
 
 /* BLE advertising channels: how far each exceeds the room, big. */
 
-/* PEILEN: hot or cold. A big number (quick average of each row's strongest
+/* BEARING: hot or cold. A big number (quick average of each row's strongest
  * signal), a bar with the best value since the page was opened, and an arrow
  * comparing the quick average with a slow one: getting closer, or not. With
  * the board held to the chest and turning slowly, the body shadows the back
@@ -1552,10 +1557,10 @@ static void sn_peil_strip(uint16_t *s, int y0, int h) {
     const int ax = UW - P(34);
     if (trend > 1.5f) {
         triangle(s, y0, h, ax, P(18), P(14), true, C_GREEN);
-        text_c(s, y0, h, ax, P(35), "waermer", C_GREEN, 1);
+        text_c(s, y0, h, ax, P(35), "warmer", C_GREEN, 1);
     } else if (trend < -1.5f) {
         triangle(s, y0, h, ax, P(18), P(14), false, C_CYAN);
-        text_c(s, y0, h, ax, P(35), "kaelter", C_CYAN, 1);
+        text_c(s, y0, h, ax, P(35), "colder", C_CYAN, 1);
     } else {
         rect(s, y0, h, ax - P(8), P(22), P(17), P(2), C_DIM);
         rect(s, y0, h, ax - P(8), P(27), P(17), P(2), C_DIM);
@@ -1573,21 +1578,21 @@ static void sn_peil_strip(uint16_t *s, int y0, int h) {
         const int gx = bx + d * bw / (int)SN_METER_DB;
         rect(s, y0, h, gx, by + bh, P(1), P(3), C_DIM);
     }
-    snprintf(t, sizeof(t), "Bestwert %+d dB", (int)(fv_sn_best + 0.5f));
+    snprintf(t, sizeof(t), "Best %+d dB", (int)(fv_sn_best + 0.5f));
     text(s, y0, h, P(6), P(88), t, C_TEXT, 1);
-    text(s, y0, h, P(6), P(104), sn_based ? "ueber dem Raum (genullt)" : "ueber dem Rauschen (ohne Basis)", C_DIM, 1);
-    text(s, y0, h, P(6), P(120), "Brust-Peilung: langsam drehen", C_DIM, 1);
+    text(s, y0, h, P(6), P(104), sn_based ? "above the room (zeroed)" : "above the noise (no baseline)", C_DIM, 1);
+    text(s, y0, h, P(6), P(120), "Body bearing: turn slowly", C_DIM, 1);
 }
 
-/* DETEKTOR: what an analogue RF detector does, in software. The receiver
+/* DETECTOR: what an analogue RF detector does, in software. The receiver
  * records the band (80 Msps around 2442 MHz) for DET_RUN_MS, without a gap on
  * the S3 (the ring capture's ENV mode), on the original ESP32 as snapshots
  * one after another; either way every 16 us is analysed, so a BLE packet
- * (80-400 us) is hard to miss, where SUCHER's snapshots hear ~1 % of the
+ * (80-400 us) is hard to miss, where FINDER's snapshots hear ~1 % of the
  * time. Between runs the display is drawn.
  * Each run gives DET_SLOTS points (strongest block per slot) of a strip
  * chart; the big number is the strongest of them over the room's own level
- * (zeroed: the room's maximum while learning, CFAR-checked as for SUCHER)
+ * (zeroed: the room's maximum while learning, CFAR-checked as for FINDER)
  * or over the noise floor.
  * Gain is fixed and raw ADC power is used: under the PHY's AGC a strong
  * access point already pushes the gain into indices whose dB values are not
@@ -1596,7 +1601,7 @@ static void sn_peil_strip(uint16_t *s, int y0, int h) {
  * until the room's strongest block sits DET_HEAD_LO..DET_HEAD_HI dB under
  * full scale; a transmitter closer than anything in the room then has that
  * headroom to show in. */
-/* DETEKTOR page: the channelizer. 80 Msps around 2442 MHz, every 16 us a
+/* DETECTOR page: the channelizer. 80 Msps around 2442 MHz, every 16 us a
  * 64-point FFT (1.25 MHz bins, 2402-2481 MHz): a BLE packet on any data
  * channel (>= 80 us) meets several FFTs and only 1.25 MHz of noise per bin,
  * some 17 dB less than the wideband power. Zeroing learns each bin's room
@@ -1784,16 +1789,16 @@ static void det_header(uint16_t *s, int y0, int h) {
     if (y0 >= HDR_H) return;
     char t[40], pg[24];
     const int64_t now = esp_timer_get_time();
-    if (!det_ok) snprintf(t, sizeof(t), "Empfang gestoert");
-    else if (det_state == DET_RANGE) snprintf(t, sizeof(t), "stelle G%d", det_gain);
+    if (!det_ok) snprintf(t, sizeof(t), "reception disturbed");
+    else if (det_state == DET_RANGE) snprintf(t, sizeof(t), "ranging G%d", det_gain);
     else if (det_state == SN_LEARN)
-        snprintf(t, sizeof(t), "lerne %d.%ds", (int)((det_phase_until - now) / 1000000),
+        snprintf(t, sizeof(t), "learning %d.%ds", (int)((det_phase_until - now) / 1000000),
                  (int)((det_phase_until - now) / 100000 % 10));
-    else if (det_state == SN_VERIFY) snprintf(t, sizeof(t), "pruefe +%.0fdB", det_margin);
+    else if (det_state == SN_VERIFY) snprintf(t, sizeof(t), "checking +%.0fdB", det_margin);
     else if (det_based) {
         const int age = (int)((now - det_based_at) / 1000000);
-        snprintf(t, sizeof(t), "genullt +%.0fdB G%d %d:%02d", det_margin, det_gain, age / 60 % 100, age % 60);
-    } else snprintf(t, sizeof(t), "ohne Basis G%d", det_gain);
+        snprintf(t, sizeof(t), "zeroed +%.0fdB G%d %d:%02d", det_margin, det_gain, age / 60 % 100, age % 60);
+    } else snprintf(t, sizeof(t), "no baseline G%d", det_gain);
     snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
     header_row(s, y0, h, sn_page_name[sn_page], t,
                !det_ok ? C_RED : det_state != SN_IDLE ? C_YELLOW : det_based ? C_GREEN : C_ORANGE, pg, C_DIM, NULL);
@@ -1811,9 +1816,9 @@ static void det_strip(uint16_t *s, int y0, int h) {
         snprintf(t, sizeof(t), "%+d", (int)(fv_det_meter + 0.5f));
         const int nw = big_text(s, y0, h, P(4), HDR_H + P(7), t, det_based ? sn_level_colour(fv_det_meter) : C_TEXT);
         text(s, y0, h, P(8) + nw, HDR_H + P(22), "dB", C_DIM, 1);
-        snprintf(t, sizeof(t), "Spitze %+d dB", (int)(fv_det_best + 0.5f));
+        snprintf(t, sizeof(t), "Peak %+d dB", (int)(fv_det_best + 0.5f));
         text(s, y0, h, P(110), HDR_H + P(6), t, C_TEXT, 1);
-        snprintf(t, sizeof(t), "Treffer/s %d", (int)(fv_det_hits + 0.5f));
+        snprintf(t, sizeof(t), "Hits/s %d", (int)(fv_det_hits + 0.5f));
         text(s, y0, h, P(110), HDR_H + P(20), t, fv_det_hits >= 1 ? C_YELLOW : C_DIM, 1);
     }
     const int cy = DET_CH_Y, ch_h = DET_CH_H;
@@ -1839,7 +1844,7 @@ static void det_strip(uint16_t *s, int y0, int h) {
     }
 }
 
-/* BLE LISTE: an ordinary BLE scan (decoded advertisements, not SDR power),
+/* BLE LIST: an ordinary BLE scan (decoded advertisements, not SDR power),
  * for devices that send too little to stand out of the room's Wi-Fi, such as
  * a smartwatch: name, manufacturer, address, RSSI, the nearest on top.
  * Entries unseen for BL_STALE_US fall to the end, after BL_GONE_US they go.
@@ -1885,7 +1890,7 @@ static void bl_prepare(void) {
     bl_n = m;
 }
 
-/* As NETZE: strong green, weak orange. */
+/* As NETWORKS: strong green, weak orange. */
 static uint16_t bl_colour(int rssi) { return rssi_colour(rssi); }
 
 static void bl_strip(uint16_t *s, int y0, int h) {
@@ -1895,14 +1900,20 @@ static void bl_strip(uint16_t *s, int y0, int h) {
     if (y0 < HDR_H) {
         int fresh = 0;
         for (int i = 0; i < bl_n; i++) fresh += now - bl[i].last_us < BL_STALE_US;
-        if (bl_n < 0) snprintf(t, sizeof(t), bl_known ? "kein BLE" : "starte BLE ...");
-        else snprintf(t, sizeof(t), "%d aktiv, %d gesamt", fresh, bl_n);
+        if (bl_n < 0) snprintf(t, sizeof(t), bl_known ? "no BLE" : "starting BLE ...");
+        else {
+            /* Restarts of a stalled scan (ble_scan.c) show, so one can tell. */
+            extern int ble_scan_restarts __attribute__((weak));
+            const int r = &ble_scan_restarts ? ble_scan_restarts : 0;
+            if (r) snprintf(t, sizeof(t), "%d active, %d total, restarts %d", fresh, bl_n, r);
+            else snprintf(t, sizeof(t), "%d active, %d total", fresh, bl_n);
+        }
         char pg[24];
         snprintf(pg, sizeof(pg), "S%d/%d", sn_page + 1, SN_PAGES);
         header_row(s, y0, h, sn_page_name[sn_page], t, bl_n < 0 ? C_ORANGE : C_GREEN, pg, C_DIM, NULL);
     }
     if (bl_n <= 0) {
-        text(s, y0, h, P(8), P(50), bl_n < 0 && bl_known ? "BLE fehlt in diesem Build" : "suche ...", C_DIM, 1);
+        text(s, y0, h, P(8), P(50), bl_n < 0 && bl_known ? "BLE not in this build" : "searching ...", C_DIM, 1);
         return;
     }
     const int age_w = text_w("99s", 1), mac_w = text_w("000000000000*", 1);
@@ -1977,9 +1988,22 @@ static void frame_view(void) {
     fv_det_wf_head = det_wf_head;
 }
 
+/* One waterfall row; DETECTOR writes its own rows (one per run) into wf.
+ * Caller holds ui_lock. */
+static void push_row(int64_t now) {
+    if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_DET)) {}
+    else if (sniffer) sn_push_row(now);
+    else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
+}
+
 static void draw_frame(void) {
     const int64_t tr = esp_timer_get_time();
     lock_ui();
+#ifdef TD_LCD_ASYNC
+    /* Frames come about as often as rows are due (ROW_US): one row per frame
+     * scrolls evenly; by the clock, frames got none or two now and then. */
+    push_row(tr);
+#endif
     glow_fade(tr);
     chan_ease();
     zb_ease();
@@ -2220,7 +2244,7 @@ void board_ui_init(void) {
     lcd_lock = xSemaphoreCreateMutex();
     ui_lock = xSemaphoreCreateMutex();
 #if defined(TD_LCD_ASYNC) && DRAW_CORE
-    td_lcd_async_start(lock_lcd, unlock_lcd, DRAW_CORE);
+    td_lcd_async_start(lock_lcd, unlock_lcd, &capture_waiting, DRAW_CORE);
 #endif
 #ifdef UI_TASK_CAPS
     xTaskCreatePinnedToCoreWithCaps(draw_loop, "draw", 4096, NULL, 2, &draw_task, DRAW_CORE, UI_TASK_CAPS);
@@ -2525,13 +2549,13 @@ bool board_ui_step(bool host_active) {
         splash_until = 0;
         page_at = now;
     }
-    /* The BLE start has no receiver: BLE LISTE only. */
+    /* The BLE start has no receiver: BLE LIST only. */
     const bool blist = sniffer && sn_page == SN_PAGE_BLIST;
     if (sdr_local_ble_boot() != blist) sn_goto(sn_page);
-    /* PEGEL keeps the radio on its network's channel; anything else frees it. */
+    /* LEVEL keeps the radio on its network's channel; anything else frees it. */
     const bool cov_page = !sniffer && page == PAGE_COV;
     if (!cov_page && cov_on) cov_stop();
-    /* Network scans stop the display for a moment, and only NETZE (names,
+    /* Network scans stop the display for a moment, and only NETWORKS (names,
      * counts) needs them: the waterfall and channel pages, best channel
      * included, run on the SDR measurement. Elsewhere only on request. */
     const bool scan_page = page == PAGE_NETS || (scan_auto && (page == PAGE_WF || page == PAGE_CHAN));
@@ -2548,16 +2572,16 @@ bool board_ui_step(bool host_active) {
     else if (cov_page) cov_step(t0);
     else dwell();
     now = esp_timer_get_time();
-    static int64_t row_at, draw_at;
+    static int64_t draw_at;
+#ifndef TD_LCD_ASYNC
+    static int64_t row_at;
     if (now - row_at >= ROW_US) {
         row_at = now;
-        /* DETEKTOR writes its own rows (one per run) into wf. */
         lock_ui();
-        if (blist || (sniffer && sn_page == SN_PAGE_DET)) {}
-        else if (sniffer) sn_push_row(now);
-        else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
+        push_row(now);
         unlock_ui();
     }
+#endif
     if (!sniffer) {
         if (auto_cycle && now >= hold_until && now - page_at > PAGE_US)
             set_page(page + 1);
