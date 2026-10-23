@@ -1745,11 +1745,16 @@ static void det_step(int64_t now) {
             det_room = -200;
             for (int k = 0; k < DET_BINS; k++) if (det_room_bin[k] > det_room) det_room = det_room_bin[k];
         }
-        /* One waterfall row per two runs (the stronger of both), so the
-         * picture holds twice the time: excess bright, the room faint. */
-        static bool det_second;
+        /* One waterfall row per ROW_US, the strongest of the runs in it
+         * (excess bright, the room faint): per run, the JC3248's ~260 runs/s
+         * left most rows empty between bursts and ran the picture through. */
+        static int64_t det_row_at;
+        const bool next_row = now - det_row_at >= ROW_US;
         if (wf) {
-            if (!det_second) det_wf_head = (det_wf_head + 1) % WF_ROWS;
+            if (next_row) {
+                det_wf_head = (det_wf_head + 1) % WF_ROWS;
+                det_row_at = now;
+            }
             uint8_t *row = wf + det_wf_head * UW;
             for (int x = 0; x < UW; x++) {
                 const int k = x * DET_BINS / UW;
@@ -1762,9 +1767,8 @@ static void det_step(int64_t now) {
                     if (v > SN_BG_MAX) v = SN_BG_MAX;
                 }
                 const uint8_t u = (uint8_t)(v > 255 ? 255 : v);
-                row[x] = !det_second || u > row[x] ? u : row[x];
+                row[x] = next_row || u > row[x] ? u : row[x];
             }
-            det_second = !det_second;
         }
     }
     for (int i = 0; i < DET_SLOTS; i++) {
