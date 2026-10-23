@@ -481,9 +481,9 @@ UI_BSS static sdr_local_ap_t aps[TABLE_MAX]; /* shown, strongest first */
 static int ap_count = -1;      /* -1: no scan yet */
 static uint8_t ap_per_ch[CHANNELS + 2];
 static int scan_part;
-/* Periodic scanning (survey, hold right twice as long): a full scan every
- * SCAN_AUTO_US on WASSERFALL, NETZE and KANAELE WIFI, so the counts follow
- * when the board is carried around (each scan stops the picture briefly). */
+/* Periodic scanning (survey, hold right 2 s): every SCAN_AUTO_US one third
+ * of the band on WASSERFALL, NETZE and KANAELE WIFI, each channel renewed
+ * every 3 s, so the counts follow when the board is carried around. */
 #define SCAN_AUTO_US 1000000
 static bool scan_auto;
 
@@ -1891,7 +1891,9 @@ static void draw_frame(void) {
 static void draw_loop(void *arg) {
     (void)arg;
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* Woken per frame by the main loop, or on its own when that is busy
+         * (a network scan, a detector run). */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2 * DRAW_US / 1000));
 #if DRAW_CORE
         /* Two cores and a frame in RAM: draw without the bus while the other
          * core measures; only sending the frame needs the lock. */
@@ -1915,7 +1917,7 @@ static void draw_loop(void *arg) {
 
 static unsigned held_prev;
 static int64_t pressed_at[2];
-static bool long_done[2];
+static bool long_done[2], long2_done[2];
 
 static void set_page(int p) {
     const int was = page;
@@ -1931,19 +1933,15 @@ static void set_page(int p) {
 
 /* A full sweep at start and on request, otherwise one part per step. */
 static void scan(void) {
-    const bool full = full_scan_pending || scan_auto;
+    const bool full = full_scan_pending;
     const uint16_t mask = full ? part_mask(0) | part_mask(1) | part_mask(2) : part_mask(scan_part);
+    /* The display is not held: the draw task (woken on its own while this
+     * task scans) keeps the picture alive; only the measurement pauses. */
     scanning = true;
-    lock_lcd();
-    lock_ui();
-    render(draw_header, 0, HDR_H);
-    unlock_ui();
-    td_lcd_idle();
     const int64_t t0 = esp_timer_get_time();
     int n = sdr_local_wifi_scan(found, SCAN_MAX, mask);
     const int64_t now = esp_timer_get_time();
     scan_us = (unsigned)(now - t0);
-    unlock_lcd();
     scanning = false;
     if (n >= 0) {
         lock_ui();
@@ -1967,7 +1965,14 @@ static void handle_keys(int64_t now) {
         const unsigned bit = 1u << i;
         if ((k & bit) && !(held_prev & bit)) {
             pressed_at[i] = now;
-            long_done[i] = false;
+            long_done[i] = long2_done[i] = false;
+        }
+        /* Right held on in survey mode: at 2 s periodic scanning on/off. */
+        if ((k & bit) && i && long_done[i] && !long2_done[i] && now - pressed_at[i] > 2 * LONG_US && !sniffer &&
+            page != PAGE_COV) {
+            long2_done[i] = true;
+            scan_auto = !scan_auto;
+            if (scan_auto) next_scan_at = now;
         }
         if ((k & bit) && !long_done[i] && now - pressed_at[i] > LONG_US) {
             long_done[i] = true;
@@ -1989,15 +1994,9 @@ static void handle_keys(int64_t now) {
                 sn_null_start(now);
             } else if (page == PAGE_COV) {
                 cov_pick(-1);
-            } /* survey: decided on release, see below */
-        }
-        if (!(k & bit) && (held_prev & bit) && long_done[i] && i && !sniffer && page != PAGE_COV) {
-            /* Right held in survey: 1-2 s one full scan, longer: periodic
-             * scanning on/off (on starts with a scan). */
-            if (now - pressed_at[i] >= 2 * LONG_US) scan_auto = !scan_auto;
-            if (scan_auto || now - pressed_at[i] < 2 * LONG_US) {
+            } else {
                 full_scan_pending = true;
-                next_scan_at = now;
+                next_scan_at = now; /* runs this step */
             }
         }
         if (!(k & bit) && (held_prev & bit) && !long_done[i]) {

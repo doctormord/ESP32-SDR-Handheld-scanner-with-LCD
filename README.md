@@ -75,8 +75,12 @@ band, and analyses them on the chip:
   (and once at start, or on request): a scan stops the picture for a moment, and
   the other pages, best channel included, run on the SDR measurement alone.
   When you carry the board around, **hold the right button for 2 s** to switch
-  on periodic scanning: a full scan every second on WASSERFALL, NETZE and
-  KANAELE WIFI (header: `scan auto`), so the network counts follow you.
+  on periodic scanning: every second one third of the band on WASSERFALL,
+  NETZE and KANAELE WIFI (header: `scan auto`), so the network counts follow
+  you. The picture keeps being drawn during a scan (on the second core); only
+  the measurement pauses for the 0.15–0.3 s a scan takes. The receiver is only
+  recalibrated for a scan when it covers channels below the measuring
+  frequency.
 - The hardware AGC sets the gain for every packet; each sample carries its gain
   index and is scaled back to a common level. A phone right next to the board
   (speed test) therefore does not overdrive the picture.
@@ -126,7 +130,7 @@ the list pages every 4 s.
 tick: peak airtime of the last seconds. 4. The quietest of 1/6/11 has a green
 column. 5. Airtime in %. 6. Channel number (fixed, at the bottom). The
 network counts come from the last scan; with periodic scanning (hold right
-2 s) they are renewed every second.
+2 s) every channel is renewed every 3 s.
 
 **Airtime colours:** green up to ~15 %, yellow around 40 %, red from 75 %.
 Neighbouring channels overlap, so a busy network on channel 6 also colours
@@ -269,11 +273,7 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
 | Button | short | long (1 s) |
 |---|---|---|
 | **Left** | next page | survey: next colour theme (PEGEL: next network) · sniffer: remove zeroing |
-| **Right** | survey ↔ sniffer | survey: 1–2 s one full network scan, ≥ 2 s periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
-
-In survey mode the right button acts on release: held 1–2 s it scans once,
-held 2 s or longer it switches periodic scanning (a full scan every second)
-on or off.
+| **Right** | survey ↔ sniffer | survey: full network scan now; kept held to 2 s: periodic scanning on/off (PEGEL: previous network) · sniffer: zero · BLE list: clear |
 
 - **T-Display:** left = GPIO0 button, right = GPIO35 button. Two optional touch
   pads on the header pins do the same: GPIO32 (left) and GPIO33 (right); a wire
