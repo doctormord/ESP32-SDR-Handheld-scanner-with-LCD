@@ -249,3 +249,19 @@ this repository unless noted.
   verified (n78 assumed).
 - Decision: dropped; `TDPROBE` stays as a diagnostic. Cellular remains the
   broadband detector idea (AD8317/AD8318) in BACKLOG.
+
+## 2026-10-24 — 5G n78 probe on the T-Display: coupling, not reception
+
+- T-Display (ESP32) with `TDPROBE`: floor −59 dB at 2442, −70…−73 dB from
+  2.8 to 3.8 GHz (12 dB lower: the front end far off its band). No line at
+  a fixed offset (unlike the S3), no harmonic at 3600 (LO 3590–3610).
+- n78 sweeps (3400–3800, 50 MHz steps, 30 captures, 3 sweeps): without the
+  phone 1 of 810 captures with a burst; phone on 5G (Wi-Fi off) flat on the
+  board with speed tests: 29 of 810, often at the same offset at
+  neighbouring LOs.
+- Cross-check, sweeps alternating below / in / above n78 with the phone
+  transmitting: 3000–3300 22 of 360, 3450–3750 7 of 360, 3900–4200 5 of 360
+  captures with bursts. Not band-selective: the phone's transmit pulses
+  couple into the board at 1 cm whatever the LO (a 5G NSA phone also sends
+  on LTE). Useless as a 5G detector.
+- Both boards: dropped (BACKLOG). `TDPROBE` stays.

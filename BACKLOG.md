@@ -40,9 +40,10 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   bearing. It also sees Wi-Fi/BLE: subtract what the SDR sees at the same
   time in 2.4 GHz, or put a cellular band filter in front. Covers the gap
   the ESP32 receivers leave (B20/B8/B3 uplinks, n78).
-- 5G n78 (3400–3800 MHz) with the ESP32-S3 receiver — dropped: no sign of
-  tuning above ~2.9 GHz, nothing from a phone on 5G next to the antenna
-  (HISTORY 2026-10-24). The broadband detector below is the way to cellular.
+- 5G n78 (3400–3800 MHz) with the ESP32 receivers — dropped: the S3 shows
+  no sign of tuning above ~2.9 GHz; the ESP32 reacts to a 5G phone at 1 cm
+  but just as much outside n78 (coupling, not reception) (HISTORY
+  2026-10-24). The broadband detector below is the way to cellular.
 - LTE via the ESP32's experimental lower band (1842–2209 MHz) — dropped:
   in Germany phones indoors mostly use 800/1800 MHz (B20/B3 uplinks below
   1842 MHz); only B1 (1920–1980) and B7 (2500–2570) uplinks would be in
