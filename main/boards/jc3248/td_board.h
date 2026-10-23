@@ -46,6 +46,12 @@ bool td_lcd_has_frame(void);
 bool td_lcd_try_frame(size_t keep);
 void td_lcd_defer(bool on);
 #define TD_LCD_CAN_DEFER 1
+/* Background sending: td_lcd_present() hands the drawn frame to a task of
+ * its own (under the caller's display lock) and drawing goes on in a second
+ * frame meanwhile. */
+void td_lcd_async_start(void (*lock)(void), void (*unlock)(void), int core);
+void td_lcd_present(void);
+#define TD_LCD_ASYNC 1
 
 /* Inputs: left half of the screen or BOOT = NEXT, right half = SCAN. */
 enum { TD_NEXT = 1u << 0, TD_SCAN = 1u << 1 };
