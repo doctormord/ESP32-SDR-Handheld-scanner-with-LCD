@@ -465,7 +465,11 @@ In `sdkconfig.defaults.<board>` or with `idf.py menuconfig` → *ESP-SDR board*:
   window (RASET). Calm pages send a few chunks or none, the waterfall all 40;
   every 2 s the whole frame goes out. `TDSTAT?` shows `chunks n`, and
   `TDLCDWIN [x y w h]` draws a red block through the window commands to check
-  another panel.
+  another panel. Column windows work too, but only aligned to 16 panel
+  columns (unaligned ones show a ragged edge); sending only the changed
+  columns of each chunk did not make frames faster, since the time then goes
+  into rotating and comparing the picture on the CPU, so only row windows
+  are used.
 - Touch AXS15231B on I²C: SDA 4, SCL 8, address 0x3B. BOOT button GPIO0.
 - 16 MB flash, 8 MB octal PSRAM (frame buffer and large tables live there).
 - USB serial/JTAG (native USB-C).
