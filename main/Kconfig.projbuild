@@ -120,6 +120,16 @@ menu "ESP-SDR board"
             80 MHz halves the time a frame takes on the bus. The ST7789 is
             specified for less, but many panels run fine; 40 MHz is safe.
 
+    config ESP_SDR_PANEL_WASH
+        bool "Panel wash instead of the scanner (display maintenance image)"
+        depends on ESP_SDR_TDISPLAY || ESP_SDR_JC3248
+        default n
+        help
+            Builds a firmware that only exercises the display: full-screen
+            colours, then every pixel flipping between opposite colours as
+            fast as the panel allows, in a loop, backlight at full. It can
+            fade image retention; it cannot mend a broken panel or flex.
+
     config ESP_SDR_PAGE_SECONDS
         int "Survey UI: seconds per page when cycling automatically (0: buttons only)"
         depends on ESP_SDR_TDISPLAY || ESP_SDR_JC3248
