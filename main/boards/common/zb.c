@@ -274,6 +274,40 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
     return true;
 }
 
+float zb_strongest_offset(const uint32_t *iq, unsigned n, unsigned msps, float *over_db) {
+    *over_db = 0;
+    if (!buf) return 0;
+    int segments = n / N;
+    if (segments > MAX_SEGMENTS) segments = MAX_SEGMENTS;
+    if (segments < 1) return 0;
+    const unsigned used = (unsigned)segments * N;
+    float si = 0, sq = 0;
+    for (unsigned j = 0; j < used; j++) {si += s10(iq[j]); sq += s10(iq[j] >> 10);}
+    const float mi = si / used, mq = sq / used;
+    memset(avg, 0, N * sizeof(float));
+    for (int s = 0; s < segments; s++) {
+        const uint32_t *p = iq + s * N;
+        for (int j = 0; j < N; j++) {
+            buf[2 * j] = (s10(p[j]) - mi) * win[j];
+            buf[2 * j + 1] = (mq - s10(p[j] >> 10)) * win[j];
+        }
+        dsps_fft2r_fc32(buf, N);
+        dsps_bit_rev2r_fc32(buf, N);
+        for (int j = 0; j < N; j++) avg[(j + N / 2) & (N - 1)] += buf[2 * j] * buf[2 * j] + buf[2 * j + 1] * buf[2 * j + 1];
+    }
+    const float bin_mhz = (float)msps / N;
+    int best = -1;
+    for (int k = 0; k < N; k++) {
+        const float off = (k - N / 2) * bin_mhz;
+        if (fabsf(off) < 0.5f || fabsf(off) > USABLE * msps) continue;
+        if (best < 0 || avg[k] > avg[best]) best = k;
+    }
+    if (best < 0) return 0;
+    const float med = median(avg, N);
+    *over_db = 10 * log10f(avg[best] / (med > 0 ? med : 1e-20f));
+    return (best - N / 2) * bin_mhz;
+}
+
 /* Peak spectrum for a field-strength detector. The power of every segment
  * is taken in the time domain first (cheap), and only the strongest `top`
  * segments are transformed: a transmitter next to the receiver is in those.

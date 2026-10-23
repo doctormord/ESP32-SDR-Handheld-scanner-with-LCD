@@ -232,6 +232,34 @@ page opens) and an arrow showing whether the signal is getting stronger
 of your chest and turn slowly. Your body damps signals from behind by 10–20 dB,
 so the source is *in front of you* where the number peaks.
 
+### FOCUS CHANNEL
+
+One channel, heard longer. The analysis costs the same per sample whatever
+the sample rate, so a capture of the same number of samples taken at a lower
+rate listens longer; the price is a narrower span, which suits one channel.
+The receiver's own sample clocks are used (80, 40 and 16 MS/s; `TDRATE`
+checks them against the 40 MHz crystal's harmonic):
+
+| Target | Rate | Span | Bin | Listening per capture vs. survey |
+|---|---|---|---|---|
+| Wi-Fi 1–13 (20 MHz) | 40 MS/s | ~34 MHz | 0.16 MHz | 2× |
+| BLE 37 / 38 / 39, Zigbee 11–26 (2 MHz) | 16 MS/s | ~13 MHz | 0.06 MHz | 5× |
+
+A narrow channel also gains from the finer bins: the noise in each bin is
+lower, so a weak 2 MHz signal stands further out of it.
+
+The page shows the channel's **airtime** (big number), its **level** over the
+floor, the floor, and the **listening time** per second; below, a phosphor
+spectrum and an occupancy waterfall of the span with the channel between two
+cyan marks. **Hold the next-page key / the mode key** to step to the next /
+previous target (Wi-Fi 1–13, BLE 37–39, Zigbee 11–26). A 2 MHz channel sits
+3 MHz off the receiver's centre, clear of its DC bins. BLE 39 (2480 MHz) lies
+on a harmonic of the 40 MHz crystal, whose bins the analysis blanks.
+
+On the JC3248, DETECTOR PEAKS already hears the whole band without gaps;
+FOCUS adds the fine frequency resolution there. On the T-Display it is also
+the page that listens longest.
+
 ### BLE LIST (JC3248 only)
 
 <img src="images/page-ble-list.png" width="60%" alt="BLE list page with numbered parts">
@@ -284,8 +312,8 @@ There are two keys:
 
 | Key | short | long (1 s) |
 |---|---|---|
-| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WATERFALL / CHANNELS WIFI: periodic scanning on/off (LEVEL: previous network) · sniffer: zero · BLE list: clear |
-| **Mode** | survey ↔ sniffer | survey: next colour theme (LEVEL: next network) · sniffer: remove zeroing |
+| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WATERFALL / CHANNELS WIFI: periodic scanning on/off (LEVEL: previous network) · sniffer: zero · FOCUS: next target · BLE list: clear |
+| **Mode** | survey ↔ sniffer | survey: next colour theme (LEVEL: next network) · sniffer: remove zeroing · FOCUS: previous target |
 
 - A touch that drops out for less than 0.12 s during a long hold still counts
   as held.
@@ -521,6 +549,8 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 | `TDZB?` | Zigbee channels: level over the floor / activity per channel |
 | `TDCOV?` / `TDCOVSEL -1\|0\|1` | coverage page: network, channel, RSSI, min, max, frames/s / choose previous, strongest, next |
 | `TDBLE?` | BLE list: every device with MAC, address type, RSSI, average, max, manufacturer id, packets, age, name |
+| `TDFOCUS?` / `TDFOCUS n` | FOCUS CHANNEL: target, rate, captures/s, listening time, airtime, level, floor / choose target `n` (0–12 Wi-Fi 1–13, 13–15 BLE 37–39, 16–31 Zigbee 11–26) |
+| `TDRATE 0\|1\|6` | checks a sample rate (80 / 40 / 16 MS/s): at 2442 MHz the crystal harmonic must show at −2.000 MHz |
 | `TDSPINOISE [n]` | what display traffic during a capture costs: `n` pairs (default 40) of captures at a fixed gain, alternately with the display bus quiet and while picture data goes out; prints floor, mean spectrum change, the worst bins and each channel's level and airtime, quiet vs busy (survey mode) |
 
 The ESP-SDR host protocol (`INFO`, `FREQ`, `CAP`, …) and the
