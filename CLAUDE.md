@@ -38,7 +38,9 @@ User-facing documentation is [README.md](README.md); this file is for whoever
 | UI_SCALE | 1 | 2 |
 
 Open the serial port with **DTR and RTS off** (`dtr=False, rts=False` in
-pyserial) or the board resets.
+pyserial) or the board resets. On macOS both boards reset on open anyway;
+wait ~8 s for the boot, and strip zero bytes (the T-Display's 115200 boot
+log read at 2 Mbaud) before parsing.
 
 ## Build and flash
 
@@ -49,7 +51,7 @@ ESP-IDF must be **exactly** commit `25fe69f946311abdaf9ad56591f25fedbc20ac98`
 macOS:
 
 ```sh
-. ~/esp/esp-idf-sdr/export.sh
+. ~/esp/esp-idf-sdr/export.sh   # this Mac: ~/esp-idf-sdr/export.sh
 # T-Display
 idf.py -B build-tdisplay -DIDF_TARGET=esp32 -DSDKCONFIG=build-tdisplay/sdkconfig \
   -DSDKCONFIG_DEFAULTS=sdkconfig.defaults.tdisplay -p /dev/cu.usbserial-XXXX flash
@@ -70,7 +72,7 @@ idf.py -B build-jc3248 -DIDF_TARGET=esp32s3 -DSDKCONFIG=build-jc3248/sdkconfig \
 - `main/boards/common/wifi_ui.c` — the whole UI of both boards: survey pages
   (WATERFALL FULL, NETWORKS, CHANNELS WIFI, CHANNELS ZIGBEE, LEVEL WIFI
   SINGLE), sniffer pages (FINDER WIDEBAND, DETECTOR PEAKS, BEARING STRONGEST,
-  FOCUS CHANNEL [branch], BLE LIST), themes, zeroing, keys, serial `TD*`
+  FOCUS WIFI / BLE / ZIGBEE [branch], BLE LIST), themes, zeroing, keys, serial `TD*`
   commands.
 - `main/boards/common/zb.c` — band analysis: 256-point FFT segments,
   max-hold spectrum, occupancy (per-segment CFAR), band power/airtime.
@@ -120,11 +122,15 @@ Runtime model (both boards, dual core):
   28–55 % of the segments the FFT finds busy.
 - Sample rates: the receiver dumps at 80, 40 or 16 MS/s natively
   (`sdr_local_capture(n, 0|1|6)`). Lower rate = longer listening per sample,
-  narrower span (FOCUS CHANNEL).
+  narrower span (FOCUS pages). Analog filter for 40 MS/s: 38 MHz (20 MHz
+  drops the span edges 10–13 dB, `TDSPAN`).
 - BLE: one continuous scan (restarting it every 300 ms stalled NimBLE after
   ~1 min); 8 s without reports restarts the stack. BLE runs in a separate
   boot mode on the S3 (RAM), switched by NVS + `esp_restart`.
 - Rows of all waterfalls are by time (40 ms), not by capture/run.
+- **S3 internal BSS is nearly full**: `sram_guard.ld` stops the link when
+  BSS reaches the RF ring at 0x3fcb0000 ("S3 RF ring overlaps BSS"); 432
+  bytes were left in Oct 2026. Put new buffers in `UI_BSS` (PSRAM on the JC).
 - RSSI is uncalibrated; expect ~10–15 dB below a phone's reading.
 - Heredocs in bash turn `\n` inside C string literals into real newlines;
   write patch scripts with a file-writing tool or check the result.
@@ -132,9 +138,10 @@ Runtime model (both boards, dual core):
 ## Serial diagnostics (most useful)
 
 `TDSTAT?` (frame/flush/render/caps, `drawn` count), `TDPAGE n`, `TDSNIFF 0|1`,
-`TDSNPAGE n`, `TDSPINOISE [n]`, `TDRATE 0|1|6` and `TDFOCUS?` (branch
-`focus-channel`), `TDDET?`, `TDBLE?`, `TDCOV?`. Full list in README.
-Frame rate: sample `drawn` twice over a few seconds; captures/s: `caps`.
+`TDSNPAGE n`, `TDSPINOISE [n]`, `TDRATE 0|1|6 [lo]`, `TDSPAN d lo bw n` and
+`TDFOCUS?` (branch `focus-channel`), `TDDET?`, `TDBLE?`, `TDCOV?`. Full list
+in README. Frame rate: sample `drawn` twice over a few seconds; captures/s:
+`caps` is a counter, take two readings.
 
 ## Process
 

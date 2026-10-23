@@ -165,8 +165,8 @@ access point sends: ten beacons a second, plus all of its traffic. No scans and
 no SDR measurements run while this page is open.
 
 The page starts with the strongest network of the NETWORKS list. **Hold the mode
-key / the next-page key** to step to the next / previous network; no fine
-tapping needed.
+key / the next-page key** to step to the next / previous network; held on, it
+steps once a second. No fine tapping needed.
 
 1. Network name, channel and MAC. 2. Signal strength in dBm (green strong,
 yellow medium, orange weak; `--` and `no signal` after 1 s without a frame).
@@ -232,33 +232,47 @@ page opens) and an arrow showing whether the signal is getting stronger
 of your chest and turn slowly. Your body damps signals from behind by 10–20 dB,
 so the source is *in front of you* where the number peaks.
 
-### FOCUS CHANNEL
+### FOCUS WIFI / FOCUS BLE / FOCUS ZIGBEE
 
 One channel, heard longer. The analysis costs the same per sample whatever
 the sample rate, so a capture of the same number of samples taken at a lower
 rate listens longer; the price is a narrower span, which suits one channel.
 The receiver's own sample clocks are used (80, 40 and 16 MS/s; `TDRATE`
-checks them against the 40 MHz crystal's harmonic):
+checks them against the 40 MHz crystal's harmonic). Three pages, one per
+system:
 
-| Target | Rate | Span | Bin | Listening per capture vs. survey |
-|---|---|---|---|---|
-| Wi-Fi 1–13 (20 MHz) | 40 MS/s | ~34 MHz | 0.16 MHz | 2× |
-| BLE 37 / 38 / 39, Zigbee 11–26 (2 MHz) | 16 MS/s | ~13 MHz | 0.06 MHz | 5× |
+| Page | Channels | Rate | Span | Bin | Listening, JC3248 | Listening, T-Display |
+|---|---|---|---|---|---|---|
+| (survey, whole band) | | 80 MS/s | 2400–2484 MHz | 0.31 MHz | 9.3 ms/s | 4.8 ms/s |
+| FOCUS WIFI | 1–13 (20 MHz) | 40 MS/s | ~34 MHz | 0.16 MHz | ~20 ms/s (2.2×) | ~9.5 ms/s (2×) |
+| FOCUS BLE | 37 / 38 / 39 (2 MHz) | 16 MS/s | ~13 MHz | 0.06 MHz | 49 ms/s (5.3×) | 24 ms/s (5×) |
+| FOCUS ZIGBEE | 11–26 (2 MHz) | 16 MS/s | ~13 MHz | 0.06 MHz | 49 ms/s (5.3×) | 24 ms/s (5×) |
 
 A narrow channel also gains from the finer bins: the noise in each bin is
-lower, so a weak 2 MHz signal stands further out of it.
+lower, so a weak 2 MHz signal stands further out of it. FOCUS is pure SDR: it
+measures energy on the channel, whoever sends it; the level of one named
+network is LEVEL WIFI SINGLE.
 
-The page shows the channel's **airtime** (big number), its **level** over the
+Each page shows the channel's **airtime** (big number), its **level** over the
 floor, the floor, and the **listening time** per second; below, a phosphor
 spectrum and an occupancy waterfall of the span with the channel between two
 cyan marks. **Hold the next-page key / the mode key** to step to the next /
-previous target (Wi-Fi 1–13, BLE 37–39, Zigbee 11–26). A 2 MHz channel sits
-3 MHz off the receiver's centre, clear of its DC bins. BLE 39 (2480 MHz) lies
-on a harmonic of the 40 MHz crystal, whose bins the analysis blanks.
+previous channel; held on, it steps once a second, so you can keep the finger
+down until the channel you want comes up. Each page remembers its channel
+across restarts. The first time, FOCUS WIFI starts on the strongest network's
+channel, FOCUS BLE on 38 and FOCUS ZIGBEE on 15.
+
+A 2 MHz channel sits 3 MHz off the receiver's centre, clear of its DC bins. A
+Wi-Fi channel is too wide for that: the ~0.8 MHz around its centre, which the
+analysis leaves out, is drawn from the neighbouring columns (802.11 OFDM
+leaves its centre subcarrier empty anyway). BLE 39 (2480 MHz) lies on a harmonic of
+the 40 MHz crystal, whose bins the analysis blanks in the same way. The
+Wi-Fi pages use a 38 MHz analogue filter: flat within ~2 dB over the span (a
+20 MHz filter cost the channel edges 3–4 dB, `TDSPAN`).
 
 On the JC3248, DETECTOR PEAKS already hears the whole band without gaps;
-FOCUS adds the fine frequency resolution there. On the T-Display it is also
-the page that listens longest.
+FOCUS adds the fine frequency resolution there. On the T-Display FOCUS is
+also the page that listens longest.
 
 ### BLE LIST (JC3248 only)
 
@@ -312,8 +326,8 @@ There are two keys:
 
 | Key | short | long (1 s) |
 |---|---|---|
-| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WATERFALL / CHANNELS WIFI: periodic scanning on/off (LEVEL: previous network) · sniffer: zero · FOCUS: next target · BLE list: clear |
-| **Mode** | survey ↔ sniffer | survey: next colour theme (LEVEL: next network) · sniffer: remove zeroing · FOCUS: previous target |
+| **Next-page** | next page | survey: full network scan now; kept held to 2 s on WATERFALL / CHANNELS WIFI: periodic scanning on/off (LEVEL: previous network) · sniffer: zero · FOCUS: next channel · BLE list: clear |
+| **Mode** | survey ↔ sniffer | survey: next colour theme (LEVEL: next network) · sniffer: remove zeroing · FOCUS: previous channel |
 
 - A touch that drops out for less than 0.12 s during a long hold still counts
   as held.
@@ -540,7 +554,7 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 | Command | Reply |
 |---|---|
 | `TDSTAT?` | survey state: page, gain, clipping, frame time, touch point (JC3248) |
-| `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | switch page / mode / sniffer page |
+| `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | switch page / mode / sniffer page (0 FINDER, 1 DETECTOR, 2 BEARING, 3–5 FOCUS WIFI / BLE / ZIGBEE, 6 BLE LIST) |
 | `TDSCAN` / `TDSCANAUTO 0\|1` | full network scan now / periodic scanning off or on |
 | `TDSCANCH c [ms]` | scan only channel `c` (passive for `ms` if given) and list every answer, raw (T-Display) |
 | `TDSN?` / `TDNULL` | finder state / zero the finder |
@@ -549,7 +563,8 @@ those lines off (or a script with `dtr=False, rts=False`) keeps it running.
 | `TDZB?` | Zigbee channels: level over the floor / activity per channel |
 | `TDCOV?` / `TDCOVSEL -1\|0\|1` | coverage page: network, channel, RSSI, min, max, frames/s / choose previous, strongest, next |
 | `TDBLE?` | BLE list: every device with MAC, address type, RSSI, average, max, manufacturer id, packets, age, name |
-| `TDFOCUS?` / `TDFOCUS n` | FOCUS CHANNEL: target, rate, captures/s, listening time, airtime, level, floor / choose target `n` (0–12 Wi-Fi 1–13, 13–15 BLE 37–39, 16–31 Zigbee 11–26) |
+| `TDFOCUS?` / `TDFOCUS n` | FOCUS: target, rate, captures/s, listening time, airtime, level, floor / choose target `n` (0–12 Wi-Fi 1–13, 13–15 BLE 37–39, 16–31 Zigbee 11–26), stored as that page's channel; in sniffer mode also goes to the page |
+| `TDSPAN d lo bw n` | noise floor across the span: rate `d` as `TDRATE`, LO in MHz, analogue filter `bw` MHz (full width), `n` captures; minimum per bin (bursts drop out), in 2 MHz slices relative to the slice at the LO |
 | `TDRATE 0\|1\|6 [lo]` | checks a sample rate (80 / 40 / 16 MS/s): at LO 2442 MHz (default) the crystal harmonic at 2440 MHz must show at −2.000 MHz; with another LO the expected offset is printed. On the JC3248 a carrier at 2448 MHz is stronger (at LO 2442: +6.0 MHz) |
 | `TDSPINOISE [n]` | what display traffic during a capture costs: `n` pairs (default 40) of captures at a fixed gain, alternately with the display bus quiet and while picture data goes out; prints floor, mean spectrum change, the worst bins and each channel's level and airtime, quiet vs busy (survey mode) |
 

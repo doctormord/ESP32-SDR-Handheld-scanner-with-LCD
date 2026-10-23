@@ -776,12 +776,15 @@ static bool two_step_hold(void);
  * while a key is held, towards a red goal at the right end, and turns red
  * once the hold has done its job (let go now). The right key in survey
  * mode holds in two steps (1 s scan, 2 s periodic scanning): its bar runs
- * over 2 s with a white mark at 1 s. */
+ * over 2 s with a white mark at 1 s. On FOCUS and LEVEL a hold steps once a
+ * second: the bar fills again for each step. */
+static bool hold_repeats(void);
 static void hold_bar(uint16_t *s, int y0, int h) {
     const unsigned k = keys_now;
     const int key = k & 2 ? 1 : k & 1 ? 0 : -1;
     if (key < 0) return;
-    const int64_t held = esp_timer_get_time() - key_down_at[key];
+    int64_t held = esp_timer_get_time() - key_down_at[key];
+    if (held > LONG_US && hold_repeats()) held = HOLD_SHOW_US + (held - LONG_US) % LONG_US;
     const int64_t span = key == 0 && two_step_hold() ? 2 * LONG_US : LONG_US;
     if (held < HOLD_SHOW_US) return;
     const int gw = UW / 16;
@@ -1073,8 +1076,8 @@ static void zb_strip(uint16_t *s, int y0, int h) {
  * stays on the network's channel (sdr_local_watch_start) and takes the RSSI
  * of each of its frames: beacons ten times a second, plus all its traffic.
  * The page starts with the strongest network; hold left / right steps to the
- * next / previous one in the list (no fine tapping needed). No scans and no
- * SDR captures run meanwhile. */
+ * next / previous one in the list, once a second while held on (no fine
+ * tapping needed). No scans and no SDR captures run meanwhile. */
 #define COV_HIST 128                /* 32 s in 250 ms steps */
 static uint8_t cov_bssid[6];
 static char cov_ssid[33];
@@ -1297,9 +1300,11 @@ static void error_strip(uint16_t *s, int y0, int h) {
 #define SN_METER_DB 40.0f      /* full scale of bars and history */
 #define SN_ADV_HIST P(136)
 
-enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_FOCUS, SN_PAGE_BLIST, SN_PAGES };
+enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_FO_WIFI, SN_PAGE_FO_BLE, SN_PAGE_FO_ZB, SN_PAGE_BLIST,
+       SN_PAGES };
 static const char *const sn_page_name[SN_PAGES] = {"FINDER WIDEBAND", "DETECTOR PEAKS", "BEARING STRONGEST",
-                                                   "FOCUS CHANNEL", "BLE LIST"};
+                                                   "FOCUS WIFI", "FOCUS BLE", "FOCUS ZIGBEE", "BLE LIST"};
+static bool sn_focus_page(int p) { return p >= SN_PAGE_FO_WIFI && p <= SN_PAGE_FO_ZB; }
 static void focus_enter(void);
 enum { SN_IDLE, SN_LEARN, SN_VERIFY };
 static bool sniffer;
@@ -1388,7 +1393,7 @@ static void sn_goto(int p) {
     if (p != SN_PAGE_BLIST && ble) reboot_to(SDR_BOOT_SNIFFER, (unsigned)p, "starting receiver ...");
     sn_page = p;
     if (sn_page == SN_PAGE_PEIL) sn_best = 0;
-    if (sn_page == SN_PAGE_FOCUS) focus_enter();
+    if (sn_focus_page(sn_page)) focus_enter();
 }
 
 static void sn_next_page(void) {
@@ -2032,7 +2037,7 @@ static void bl_step(void) {
     else if (bl_n < 0) bl_n = 0;
 }
 
-/* ---- sniffer page: FOCUS CHANNEL --------------------------------------------- */
+/* ---- sniffer pages: FOCUS WIFI / BLE / ZIGBEE -------------------------------- */
 /* One channel at a lower sample rate: the analysis costs the same per sample,
  * so a capture of the same length in samples listens longer. A Wi-Fi
  * channel (20 MHz) at 40 MS/s hears twice as long as the survey; a BLE
@@ -2040,9 +2045,15 @@ static void bl_step(void) {
  * 0.06 MHz bins in which a narrow signal stands further out of the noise.
  * Rates are the receiver's own dump clocks (TDRATE checks them). Shows the
  * channel's airtime and level, a phosphor and an occupancy waterfall of the
- * span, the target between two marks. Holding the keys steps through the
- * targets: Wi-Fi 1-13, BLE 37-39, Zigbee 11-26. */
+ * span, the target between two marks. One page per system, each keeping its
+ * channel (NVS); a held key steps once a second through Wi-Fi 1-13, BLE
+ * 37-39 or Zigbee 11-26. */
 #define FO_TARGETS (13 + 3 + 16)
+static const int fo_first[3] = {0, 13, 16}, fo_count[3] = {13, 3, 16};
+/* Channel index per system; Wi-Fi -1: none chosen yet, so the page starts
+ * on the strongest network's channel. BLE 38, Zigbee 15 (a common one). */
+static int fo_ch[3] = {-1, 1, 4};
+static int64_t fo_save_at;
 #define FO_BIG_Y (HDR_H + P(4))
 #define FO_GLOW_Y (HDR_H + P(38))
 #define FO_GLOW_H P(26)
@@ -2061,6 +2072,7 @@ static int64_t fo_caps_at, fo_last;
 static int fo_head;
 UI_BSS static float fo_kf[UW];
 UI_BSS static int16_t fo_k[UW];
+UI_BSS static bool fo_spur[UW];
 static float fv_fo_air, fv_fo_lvl, fv_fo_floor, fv_fo_ref;
 static unsigned fv_fo_caps_ps;
 static int fv_fo_head;
@@ -2094,6 +2106,11 @@ static void focus_layout(void) {
         fo_kf[x] = (f - fo_lo) / bin + ZB_FFT_N / 2;
         int k = (int)floorf(fo_kf[x] + 0.5f);
         fo_k[x] = (int16_t)(k < 0 ? 0 : k >= ZB_FFT_N ? ZB_FFT_N - 1 : k);
+        /* The bins zb.c blanks (DC, crystal harmonics) would draw a black
+         * gap, ~0.8 MHz in the middle of a Wi-Fi channel: such columns
+         * repeat their left neighbour. Airtime leaves those bins out. */
+        const float rf = fo_lo + (fo_k[x] - ZB_FFT_N / 2) * bin;
+        fo_spur[x] = fabsf(rf - fo_lo) < 0.25f + bin / 2 || fabsf(rf - 40.0f * roundf(rf / 40.0f)) < 0.25f + bin / 2;
     }
 }
 static int fo_col(float mhz) {
@@ -2101,8 +2118,36 @@ static int fo_col(float mhz) {
     return (int)((mhz - (fo_lo - span / 2)) * UW / span);
 }
 
+static void focus_load(void) {
+    nvs_handle_t h;
+    uint8_t v[3];
+    size_t n = sizeof(v);
+    if (nvs_open("tdisplay", NVS_READONLY, &h) != ESP_OK) return;
+    if (nvs_get_blob(h, "fo_ch", v, &n) == ESP_OK && n == sizeof(v))
+        for (int s = 0; s < 3; s++) if (v[s] < fo_count[s]) fo_ch[s] = v[s];
+    nvs_close(h);
+}
+
+/* Called every step: store the channels once they have stayed for two
+ * seconds (a held key steps once a second). */
+static void focus_save(int64_t now) {
+    if (!fo_save_at || now < fo_save_at) return;
+    fo_save_at = 0;
+    nvs_handle_t h;
+    if (nvs_open("tdisplay", NVS_READWRITE, &h) == ESP_OK) {
+        const uint8_t v[3] = {(uint8_t)fo_ch[0], (uint8_t)fo_ch[1], (uint8_t)fo_ch[2]}; /* -1: 0xff, none */
+        nvs_set_blob(h, "fo_ch", v, sizeof(v));
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
+
 static void focus_enter(void) {
+    const int s = sn_page - SN_PAGE_FO_WIFI;
+    int c = fo_ch[s];
+    if (c < 0) c = ap_count > 0 && aps[0].channel >= 1 && aps[0].channel <= 13 ? aps[0].channel - 1 : 5;
     lock_ui();
+    fo_target = fo_first[s] + c;
     focus_layout();
     fo_ref = -200;
     fo_air = fo_lvl = 0;
@@ -2116,13 +2161,19 @@ static void focus_enter(void) {
     unlock_ui();
 }
 
+/* Next / previous channel of the page's system, wrapping around. */
 static void focus_pick(int step) {
-    fo_target = (fo_target + step + FO_TARGETS) % FO_TARGETS;
+    const int s = sn_page - SN_PAGE_FO_WIFI, n = fo_count[s];
+    fo_ch[s] = (fo_target - fo_first[s] + step + n) % n;
+    fo_save_at = esp_timer_get_time() + 2000000;
     focus_enter();
 }
 
 static void focus_step(void) {
-    sdr_local_set_bandwidth(fo_msps == 40 ? 20 : 15);
+    /* Analog filter, full width. At 40 MS/s, 20 MHz cost the channel edges
+     * 3-4 dB and the span edges 11-13 dB; 38 MHz is flat within 2 dB
+     * (TDSPAN, T-Display). At 16 MS/s, 15 MHz is flat within 1 dB. */
+    sdr_local_set_bandwidth(fo_msps == 40 ? 38 : 15);
     sdr_local_set_gain(-1);
     sdr_local_tune(fo_lo);
     const uint32_t *iq = quiet_capture_div(CAP_N, fo_div);
@@ -2145,7 +2196,7 @@ static void focus_step(void) {
         fo_air += (1 - expf(-dt / FO_AIR_S)) * (r.busy[0] - fo_air);
         fo_lvl += (1 - expf(-dt / FO_LVL_S)) * (r.peak[0] - fo_ref - fo_lvl);
     }
-    const glow_map_t g = {fo_kf, fo_k, fo_k, NULL, 0, -1, 0, fo_ref};
+    const glow_map_t g = {fo_kf, fo_k, fo_k, fo_spur, 0, -1, 0, fo_ref};
     glow_feed(0, r.clip, fo_lo, &g);
     fo_caps++;
     if (now - fo_caps_at >= 1000000) {
@@ -2165,7 +2216,7 @@ static void focus_push_row(void) {
     const float segs = zb_occ_segments ? (float)zb_occ_segments : 1;
     for (int x = 0; x < UW; x++) {
         const unsigned m = occ_cnt[fo_k[x]];
-        new_row[x] = m ? sqrtf(m / segs) * 255 : 0;
+        new_row[x] = x && fo_spur[x] ? new_row[x - 1] : m ? sqrtf(m / segs) * 255 : 0;
     }
     soften_row(row, prev, new_row);
     memset(occ_cnt, 0, sizeof(occ_cnt));
@@ -2263,7 +2314,7 @@ static void frame_view(void) {
  * Caller holds ui_lock. */
 static void push_row(int64_t now) {
     if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_DET)) {}
-    else if (sniffer && sn_page == SN_PAGE_FOCUS) focus_push_row();
+    else if (sniffer && sn_focus_page(sn_page)) focus_push_row();
     else if (sniffer) sn_push_row(now);
     else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
 }
@@ -2293,7 +2344,7 @@ static void draw_frame(void) {
     if (sniffer && sn_page == SN_PAGE_BLIST) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
                         : sn_page == SN_PAGE_DET ? det_strip
-                        : sn_page == SN_PAGE_FOCUS ? focus_strip : sn_peil_strip, 0, H);
+                        : sn_focus_page(sn_page) ? focus_strip : sn_peil_strip, 0, H);
     else switch (page) {
     case PAGE_WF: render(wf_strip, 0, H); break;
     case PAGE_NETS: render(nets_strip, 0, H); break;
@@ -2423,10 +2474,12 @@ static void keys_loop(void *arg) {
 /* Next-page key held on in survey mode: 1 s one full scan, 2 s periodic
  * scanning on/off (only where the scan mode shows). */
 static bool two_step_hold(void) { return !sniffer && (page == PAGE_WF || page == PAGE_CHAN); }
+/* FOCUS (channels) and LEVEL (networks): a held key keeps stepping. */
+static bool hold_repeats(void) { return sniffer ? sn_focus_page(sn_page) : page == PAGE_COV; }
 
 static void focus_pick(int step);
 static void key_long(int i, int64_t now) {
-    if (sniffer && sn_page == SN_PAGE_FOCUS) {
+    if (sniffer && sn_focus_page(sn_page)) {
         focus_pick(i ? 1 : -1); /* next-page key: next target, mode key: previous */
     } else if (!i && sniffer && (sn_page == SN_PAGE_DET)) {
         det_state = SN_IDLE;
@@ -2471,6 +2524,7 @@ static void key_short(int i, int64_t now) {
 static void handle_keys(int64_t now) {
     static unsigned seen[2];
     static bool active[2];
+    static int reps[2];
     const unsigned k = keys_now;
     for (int i = 0; i < 2; i++) {
         const bool held = k & (1u << i);
@@ -2478,6 +2532,7 @@ static void handle_keys(int64_t now) {
             seen[i] = key_seq[i];
             pressed_at[i] = key_down_at[i];
             long_done[i] = long2_done[i] = false;
+            reps[i] = 0;
             active[i] = true;
         }
         if (!active[i]) continue;
@@ -2485,6 +2540,11 @@ static void handle_keys(int64_t now) {
         if (!long_done[i] && dur > LONG_US) {
             long_done[i] = true;
             key_long(!i, now); /* long holds swapped: the next-page key scans / zeroes */
+        }
+        /* FOCUS / LEVEL: holding on keeps stepping, one a second. */
+        if (held && long_done[i] && hold_repeats() && dur > (reps[i] + 2) * LONG_US) {
+            reps[i]++;
+            key_long(!i, now);
         }
         if (!i && long_done[i] && !long2_done[i] && dur > 2 * LONG_US && two_step_hold()) {
             long2_done[i] = true;
@@ -2515,6 +2575,7 @@ void board_ui_init(void) {
     zb_set_occupancy(occ_cnt);
     zb_set_maxspec(spec_tmp);
     theme_load();
+    focus_load();
     /* The drivers own these pins; GPIO discovery must leave them alone. */
     esp_gpio_reserve(td_board_pins());
     wf_layout();
@@ -2558,6 +2619,7 @@ void board_ui_init(void) {
     } else if (req == SDR_BOOT_SNIFFER) {
         sn_enter(true);
         sn_page = bp < SN_PAGES && bp != SN_PAGE_BLIST ? (int)bp : SN_PAGE_FIND;
+        if (sn_focus_page(sn_page)) focus_enter();
         splash_until = 0;
     }
 }
@@ -2897,8 +2959,8 @@ bool board_ui_command(const char *line) {
         burst_serial_send("OK\n", 3);
         return true;
     }
-    /* TDFOCUS? / TDFOCUS n: FOCUS CHANNEL state / choose target n (0-31:
-     * Wi-Fi 1-13, BLE 37-39, Zigbee 11-26). */
+    /* TDFOCUS? / TDFOCUS n: FOCUS state / choose target n (0-31: Wi-Fi
+     * 1-13, BLE 37-39, Zigbee 11-26) and, in sniffer mode, go to its page. */
     if (!strcmp(line, "TDFOCUS?")) {
         char out[200];
         const int m = snprintf(out, sizeof(out),
@@ -2909,9 +2971,11 @@ bool board_ui_command(const char *line) {
         return true;
     }
     if (sscanf(line, "TDFOCUS %d", &p) == 1 && p >= 0 && p < FO_TARGETS) {
-        fo_target = p;
-        if (sniffer && sn_page == SN_PAGE_FOCUS) focus_enter();
+        const int s = p < fo_first[1] ? 0 : p < fo_first[2] ? 1 : 2;
+        fo_ch[s] = p - fo_first[s];
+        fo_save_at = esp_timer_get_time() + 2000000;
         burst_serial_send("OK\n", 3);
+        if (sniffer) sn_goto(SN_PAGE_FO_WIFI + s);
         return true;
     }
     /* TDRATE d [lo]: checks a sample rate (d = 0 / 1 / 6: 80 / 40 / 16 MS/s)
@@ -2939,6 +3003,53 @@ bool board_ui_command(const char *line) {
         burst_serial_send(out, m);
         return true;
     }
+    /* TDSPAN d lo bw n: noise floor across the span (rate d as TDRATE, LO,
+     * analog filter bw MHz, n captures): the minimum per bin over the
+     * captures (bursts drop out), averaged in 2 MHz slices, dB relative to
+     * the slice at the LO. Shows where the analog filter rolls off. */
+    int span_bw, span_n;
+    if (sscanf(line, "TDSPAN %d %d %d %d", &p, &rate_lo, &span_bw, &span_n) == 4 && (p == 0 || p == 1 || p == 6) &&
+        rate_lo >= 2300 && rate_lo <= 2600 && span_n >= 1 && span_n <= 200) {
+        const unsigned msps = p == 0 ? 80 : p == 1 ? 40 : 16;
+        UI_BSS static float spec[ZB_FFT_N], low[ZB_FFT_N];
+        for (int k = 0; k < ZB_FFT_N; k++) low[k] = 1e9f;
+        int got = 0;
+        for (int i = 0; i < span_n; i++) {
+            lock_lcd();
+            td_lcd_idle();
+            sdr_local_set_bandwidth((unsigned)span_bw);
+            sdr_local_set_gain(GAIN_REF);
+            sdr_local_tune(rate_lo);
+            const uint32_t *iq = sdr_local_capture(CAP_N, (unsigned)p);
+            const bool ok = iq && zb_avg_spectrum_db(iq, CAP_N, spec);
+            unlock_lcd();
+            if (!ok) continue;
+            got++;
+            for (int k = 0; k < ZB_FFT_N; k++) if (spec[k] < low[k]) low[k] = spec[k];
+            vTaskDelay(1);
+        }
+        const float bin = (float)msps / ZB_FFT_N;
+        const int slices = (int)(0.84f * msps / 2);
+        float sl[48], ref_db = 0;
+        for (int s = 0; s < slices && s < 48; s++) {
+            const float f0 = -0.42f * msps + 2 * s;
+            float sum = 0;
+            int m = 0;
+            for (int k = 0; k < ZB_FFT_N; k++) {
+                const float f = (k - ZB_FFT_N / 2) * bin;
+                if (f >= f0 && f < f0 + 2 && fabsf(f) >= 0.5f) {sum += low[k]; m++;}
+            }
+            sl[s] = m ? sum / m : -200;
+            if (f0 <= -1 && f0 + 2 > -1) ref_db = sl[s];
+        }
+        char out[600];
+        int m = snprintf(out, sizeof(out), "TDSPAN %u MS/s LO %d bw %d caps %d ref %.1f dB, 2 MHz slices from %+.1f MHz:",
+                         msps, rate_lo, span_bw, got, ref_db, -0.42f * msps);
+        for (int s = 0; s < slices && s < 48 && m < (int)sizeof(out) - 8; s++) m += snprintf(out + m, sizeof(out) - m, " %.1f", sl[s] - ref_db);
+        m += snprintf(out + m, sizeof(out) - m, "\n");
+        burst_serial_send(out, m);
+        return true;
+    }
     if (sscanf(line, "TDPAGE %d", &p) == 1 && p >= 0 && p < PAGES) {
         set_page(p);
         hold_until = esp_timer_get_time() + HOLD_US;
@@ -2963,6 +3074,7 @@ bool board_ui_step(bool host_active) {
     host_shown = false;
     handle_keys(now);
     theme_save(now);
+    focus_save(now);
     keys_us = (unsigned)(esp_timer_get_time() - now);
     if (splash_until) {
         if (now < splash_until) {
@@ -2990,7 +3102,7 @@ bool board_ui_step(bool host_active) {
     if (!blist) sdr_local_set_bandwidth(BW_80);
     if (blist) bl_step();
     else if (sniffer && (sn_page == SN_PAGE_DET)) det_step(t0);
-    else if (sniffer && sn_page == SN_PAGE_FOCUS) focus_step();
+    else if (sniffer && sn_focus_page(sn_page)) focus_step();
     else if (sniffer) sn_dwell();
     else if (page == PAGE_ZB) zb_dwell();
     else if (cov_page) cov_step(t0);

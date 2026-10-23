@@ -51,3 +51,6 @@ extern float zb_dynamic_range_db;
  * the capture's average spectrum, taken as sampled at msps (bins within
  * 0.5 MHz of DC skipped), and how far it stands over the median bin. */
 float zb_strongest_offset(const uint32_t *iq, unsigned n, unsigned msps, float *over_db);
+/* Diagnostics (TDSPAN): the capture's average spectrum, dB per bin on the
+ * peak[] scale, ZB_FFT_N bins, lowest RF first. */
+bool zb_avg_spectrum_db(const uint32_t *iq, unsigned n, float *spec_db);

@@ -274,8 +274,9 @@ bool zb_analyze(const uint32_t *iq, unsigned n, unsigned msps, unsigned lo_mhz,
     return true;
 }
 
-float zb_strongest_offset(const uint32_t *iq, unsigned n, unsigned msps, float *over_db) {
-    *over_db = 0;
+/* Sum of the segments' power spectra into avg[] (lowest RF first); the
+ * number of segments, 0 if none. */
+static int avg_spectrum(const uint32_t *iq, unsigned n) {
     if (!buf) return 0;
     int segments = n / N;
     if (segments > MAX_SEGMENTS) segments = MAX_SEGMENTS;
@@ -295,6 +296,19 @@ float zb_strongest_offset(const uint32_t *iq, unsigned n, unsigned msps, float *
         dsps_bit_rev2r_fc32(buf, N);
         for (int j = 0; j < N; j++) avg[(j + N / 2) & (N - 1)] += buf[2 * j] * buf[2 * j] + buf[2 * j + 1] * buf[2 * j + 1];
     }
+    return segments;
+}
+
+bool zb_avg_spectrum_db(const uint32_t *iq, unsigned n, float *spec_db) {
+    const int segments = avg_spectrum(iq, n);
+    if (!segments) return false;
+    for (int k = 0; k < N; k++) spec_db[k] = db(avg[k] / segments);
+    return true;
+}
+
+float zb_strongest_offset(const uint32_t *iq, unsigned n, unsigned msps, float *over_db) {
+    *over_db = 0;
+    if (!avg_spectrum(iq, n)) return 0;
     const float bin_mhz = (float)msps / N;
     int best = -1;
     for (int k = 0; k < N; k++) {
