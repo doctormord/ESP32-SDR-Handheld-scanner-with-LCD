@@ -63,6 +63,9 @@ static int s3_fofs; /* FOFS: PLL offset in kHz, applied from the next tune */
  * calibration across them (sdr_local_set_cal_span). */
 static unsigned cal_span_mhz;
 static bool cal_elsewhere;  /* a Wi-Fi scan calibrated for its channels */
+/* rx_recalibrate() releases manual gain for its gain sweep; whoever tuned
+ * must apply the gain again (prepare_rx does, sdr_local_tune checks this). */
+static bool s3_recalibrated;
 static void s3_tune(unsigned mhz) {
     static unsigned calibrated_mhz;
     const unsigned off = calibrated_mhz > mhz ? calibrated_mhz - mhz : mhz - calibrated_mhz;
@@ -70,6 +73,7 @@ static void s3_tune(unsigned mhz) {
         cal_elsewhere = false;
         rx_recalibrate(mhz);
         calibrated_mhz = mhz;
+        s3_recalibrated = true;
     }
     rx_lo_plan_t plan=rx_lo_plan(mhz);
     /* A PLL offset also requires direct tuning on Wi-Fi channel frequencies. */
@@ -353,7 +357,12 @@ void sdr_local_tune(unsigned mhz) {
     frequency_mhz = mhz;
     if (!rx_ready || rx_lo_plan(mhz).alternate) {rx_ready = false; prepare_rx(); return;}
     s3_tune(mhz);
+    /* Without this, a recalibrating tune left the receiver on hardware AGC
+     * while the UI asked for manual gain: floor +20 dB at fixed gain
+     * (TDPROBE, Oct 2026). */
     if (rx_recalibration_stale()) {rx_ready = false; prepare_rx();}
+    else if (s3_recalibrated) gain_apply();
+    s3_recalibrated = false;
 }
 int sdr_local_gain(void) { return gain_mode == GAIN_HARDWARE ? -1 : (int)gain_code; }
 unsigned sdr_local_gain_max(void) { return gain_max(); }

@@ -2624,6 +2624,11 @@ void board_ui_init(void) {
     }
 }
 
+static int float_cmp(const void *a, const void *b) {
+    const float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+
 /* TDSTAT? reports the measurement, scan and touch state over the serial port
  * (handy to tune the touch threshold: lower reading = finger). */
 bool board_ui_command(const char *line) {
@@ -3001,6 +3006,58 @@ bool board_ui_command(const char *line) {
                                msps, rate_lo, off, over, (float)(40 * ((rate_lo + 20) / 40) - rate_lo),
                                iq ? "" : "(capture failed)");
         burst_serial_send(out, m);
+        return true;
+    }
+    /* TDPROBE f0 f1 step [n]: does the receiver hear anything far from
+     * 2.4 GHz (5G n78: 3400-3800 MHz)? For each LO from f0 to f1, n captures
+     * at 80 MS/s and fixed gain: the floor (median bin; median over the
+     * captures), the strongest bin over the median (max over the captures)
+     * and its offset, the captures with a bin > 15 dB over the median
+     * (bursts), and the offset where the nearest 40 MHz crystal harmonic
+     * would sit. A PLL that does not get there shows the room's 2.4 GHz
+     * Wi-Fi instead, or the same picture at every LO. */
+    int pr_f0, pr_f1, pr_step, pr_n = 20;
+    if (sscanf(line, "TDPROBE %d %d %d %d", &pr_f0, &pr_f1, &pr_step, &pr_n) >= 3 && pr_f0 >= 100 && pr_f1 <= 6000 &&
+        pr_f0 <= pr_f1 && pr_step >= 1 && pr_n >= 1 && pr_n <= 200) {
+        UI_BSS static float pr_spec[ZB_FFT_N], pr_sort[ZB_FFT_N], pr_floor[200];
+        const float bin = 80.0f / ZB_FFT_N;
+        char out[160];
+        for (int lo = pr_f0; lo <= pr_f1; lo += pr_step) {
+            int got = 0, bursts = 0;
+            float best = -200, best_off = 0;
+            for (int i = 0; i < pr_n; i++) {
+                lock_lcd();
+                td_lcd_idle();
+                sdr_local_set_bandwidth(BW_80);
+                sdr_local_set_gain(GAIN_REF);
+                sdr_local_tune((unsigned)lo);
+                const uint32_t *iq = sdr_local_capture(CAP_N, 0);
+                const bool ok = iq && zb_avg_spectrum_db(iq, CAP_N, pr_spec);
+                unlock_lcd();
+                vTaskDelay(1);
+                if (!ok) continue;
+                memcpy(pr_sort, pr_spec, sizeof(pr_sort));
+                qsort(pr_sort, ZB_FFT_N, sizeof(float), float_cmp);
+                const float med = pr_sort[ZB_FFT_N / 2];
+                float top = -200, top_off = 0;
+                for (int k = 0; k < ZB_FFT_N; k++) {
+                    const float off = (k - ZB_FFT_N / 2) * bin;
+                    if (fabsf(off) < 0.5f || fabsf(off) > 0.42f * 80) continue;
+                    if (pr_spec[k] > top) {top = pr_spec[k]; top_off = off;}
+                }
+                if (top - med > 15) bursts++;
+                if (top - med > best) {best = top - med; best_off = top_off;}
+                pr_floor[got++] = med;
+            }
+            qsort(pr_floor, (size_t)got, sizeof(float), float_cmp);
+            const float h = 40.0f * roundf(lo / 40.0f) - lo;
+            int m = snprintf(out, sizeof(out), "TDPROBE lo %d floor %.1f peak %+.2f MHz %+.1f dB bursts %d/%d", lo,
+                             got ? pr_floor[got / 2] : -200.0f, best_off, best, bursts, got);
+            if (fabsf(h) <= 0.42f * 80 && fabsf(h) >= 0.5f) m += snprintf(out + m, sizeof(out) - m, " harmonic %+.1f", h);
+            m += snprintf(out + m, sizeof(out) - m, "\n");
+            burst_serial_send(out, m);
+        }
+        burst_serial_send("TDPROBE END\n", 12);
         return true;
     }
     /* TDSPAN d lo bw n: noise floor across the span (rate d as TDRATE, LO,

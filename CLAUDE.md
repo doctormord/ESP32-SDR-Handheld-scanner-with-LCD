@@ -131,6 +131,12 @@ Runtime model (both boards, dual core):
 - **S3 internal BSS is nearly full**: `sram_guard.ld` stops the link when
   BSS reaches the RF ring at 0x3fcb0000 ("S3 RF ring overlaps BSS"); 432
   bytes were left in Oct 2026. Put new buffers in `UI_BSS` (PSRAM on the JC).
+- **Nothing above ~2.9 GHz** on the S3 (TDPROBE): only a line at a fixed
+  offset from the requested LO, no crystal harmonic at 3600, nothing from a
+  5G phone. The 100–6000 MHz range is software only.
+- S3: `rx_recalibrate()` releases manual gain; `sdr_local_tune` re-applies
+  it after a recalibrating tune (missing before Oct 2026: fixed-gain
+  diagnostics read +20 dB floor after a far retune).
 - RSSI is uncalibrated; expect ~10–15 dB below a phone's reading.
 - Heredocs in bash turn `\n` inside C string literals into real newlines;
   write patch scripts with a file-writing tool or check the result.
@@ -138,7 +144,8 @@ Runtime model (both boards, dual core):
 ## Serial diagnostics (most useful)
 
 `TDSTAT?` (frame/flush/render/caps, `drawn` count), `TDPAGE n`, `TDSNIFF 0|1`,
-`TDSNPAGE n`, `TDSPINOISE [n]`, `TDRATE 0|1|6 [lo]`, `TDSPAN d lo bw n` and
+`TDSNPAGE n`, `TDSPINOISE [n]`, `TDRATE 0|1|6 [lo]`, `TDSPAN d lo bw n`,
+`TDPROBE f0 f1 step [n]` and
 `TDFOCUS?` (branch `focus-channel`), `TDDET?`, `TDBLE?`, `TDCOV?`. Full list
 in README. Frame rate: sample `drawn` twice over a few seconds; captures/s:
 `caps` is a counter, take two readings.
