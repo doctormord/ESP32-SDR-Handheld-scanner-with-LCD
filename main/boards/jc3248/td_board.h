@@ -8,6 +8,7 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include "sdr_local.h"
 #include "sdr_view.h"
 #include "zb.h"
@@ -39,6 +40,12 @@ void td_lcd_idle(void);
 /* Diagnostics: a block of colour c through the panel's window commands. */
 void td_lcd_test_window(int x, int y, int w, int h, uint16_t c);
 #define TD_LCD_WINDOW_TEST 1
+/* While deferred, td_lcd_idle() does not send (the picture is being drawn on
+ * the other core); td_lcd_has_frame() is always true here. */
+bool td_lcd_has_frame(void);
+bool td_lcd_try_frame(size_t keep);
+void td_lcd_defer(bool on);
+#define TD_LCD_CAN_DEFER 1
 
 /* Inputs: left half of the screen or BOOT = NEXT, right half = SCAN. */
 enum { TD_NEXT = 1u << 0, TD_SCAN = 1u << 1 };

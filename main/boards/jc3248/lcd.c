@@ -53,6 +53,7 @@ static uint16_t *frame;         /* logical TD_LCD_W x TD_LCD_H, PSRAM */
 static uint16_t *bounce[2];     /* internal DMA chunks */
 UI_BSS static uint16_t strip[TD_LCD_W * TD_STRIP_H];
 static bool dirty;
+static volatile bool frame_defer; /* the UI is drawing on the other core: do not send */
 unsigned td_lcd_flush_us, td_lcd_blit_us; /* diagnostics */
 
 static bool on_done(esp_lcd_panel_io_handle_t h, esp_lcd_panel_io_event_data_t *e, void *ctx) {
@@ -234,8 +235,12 @@ void td_lcd_blit(int x, int y, int w, int h, uint16_t *src) {
     td_lcd_blit_us += (unsigned)(esp_timer_get_time() - t0);
 }
 
+bool td_lcd_has_frame(void) { return true; }
+bool td_lcd_try_frame(size_t keep) { (void)keep; return true; } /* the frame is in PSRAM already */
+void td_lcd_defer(bool on) { frame_defer = on; }
+
 void td_lcd_idle(void) {
-    if (dirty) {
+    if (dirty && !frame_defer) {
         dirty = false;
         const int64_t t0 = esp_timer_get_time();
         flush();

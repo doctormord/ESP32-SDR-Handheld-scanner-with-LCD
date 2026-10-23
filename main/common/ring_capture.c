@@ -1430,6 +1430,9 @@ static inline void c1_revoke(unsigned b) {
 }
 
 static void c1_start(void) {
+#if !CONFIG_FREERTOS_UNICORE
+    return; /* core 1 runs FreeRTOS tasks (the board UI's drawing): single-core SPEC */
+#endif
     hbuf = heap_caps_aligned_alloc(16, 2 * RING_SPEC_NFFT_MAX * sizeof(int16_t), MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
     if (!hbuf) return; /* no second core: single-core SPEC */
     cpu_utility_ll_unstall_cpu(1);
