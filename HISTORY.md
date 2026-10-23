@@ -210,3 +210,15 @@ this repository unless noted.
 - The JC3248 link failed once ("S3 RF ring overlaps BSS") from two 1 KB
   static arrays in `TDSPAN`; moved to `UI_BSS`. 432 bytes of internal BSS
   are left (CLAUDE.md).
+
+## 2026-10-24 — Release v1.2.0
+
+- `focus-channel` fast-forwarded into `main` (`2575ca4`); images built from
+  clean build dirs with `v1.2.0` tagged locally first, so the app reports
+  `v1.2.0`; committed as `b363c43`, tag moved there.
+- JC3248 image flashed at 0x0 as users do: boots as v1.2.0, FOCUS WIFI
+  20.2 ms/s from erased NVS. T-Display image not flashed (board not
+  connected; same code as tested).
+- Release v1.2.0 on GitHub with both images and an extended changelog.
+- Mac: git over HTTPS has no credentials here; push with
+  `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push`.
