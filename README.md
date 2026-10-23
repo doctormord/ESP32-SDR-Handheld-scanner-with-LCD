@@ -91,8 +91,9 @@ NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
 
 <img src="images/page-waterfall.png" width="60%" alt="Waterfall page with numbered parts">
 
-1. **Header:** page name, number of networks found, `best N` = the quietest of
-   channels 1/6/11, page number (`AUTO`, `HOTS` or `CLIP` when those are active).
+1. **Header:** page name, number of networks found (from the last scan), page
+   number (`AUTO` or `CLIP` when those are active). It stays still; what
+   changes is drawn below it.
 2. **Phosphor spectrum:** every snapshot adds a little light where its trace
    lies, and everything fades within about a second. Levels that keep coming
    back glow hot, rare peaks stay faint.
@@ -102,8 +103,10 @@ NETZE → KANAELE WIFI → KANAELE ZIGBEE → PEGEL WIFI SINGLE.
    carriers disappear and bursts stand out.
 4. **BLE advertising:** short dashes on the Bluetooth LE advertising channels
    37/38/39 (2402/2426/2480 MHz, marked magenta on the axis).
-5. **Channel numbers 1–13,** coloured by their airtime (green → yellow → red);
-   quiet ones stay grey, 1/6/11 cyan.
+5. **Channel numbers 1–13,** fixed: 1/6/11 cyan, the rest grey (the airtime
+   per channel is on KANAELE WIFI).
+6. **`best`:** the quietest of channels 1/6/11 by measured airtime, at the foot
+   of the phosphor plot.
 
 ### NETZE (networks)
 
@@ -120,7 +123,8 @@ the list pages every 4 s.
 
 1. Number of networks per channel. 2. Airtime bar (full = 100 %). 3. White
 tick: peak airtime of the last seconds. 4. The quietest of 1/6/11 has a green
-column. 5. Channel number. 6. Airtime in %.
+column. 5. Airtime in %. 6. Channel number (fixed, at the bottom). The
+network counts come from the last scan.
 
 **Airtime colours:** green up to ~15 %, yellow around 40 %, red from 75 %.
 Neighbouring channels overlap, so a busy network on channel 6 also colours
@@ -137,7 +141,8 @@ The 802.15.4 channels 11–26 (Zigbee, Thread, Matter; 2 MHz each at
 1. Channels 15, 20, 25 and 26 (blue column, cyan number) sit between Wi-Fi 1,
 6 and 11 and are the usual choice for a Zigbee network. 2. Level over the noise
 floor (full = 40 dB), coloured by activity. 3. White tick: recent peak level.
-4. Channel number. 5. Activity: share of time the channel was busy, in %.
+4. Activity: share of time the channel was busy, in %. 5. Channel number
+(fixed, at the bottom).
 
 ### PEGEL WIFI SINGLE (coverage of one network)
 
@@ -269,15 +274,6 @@ learned away). The header shows margin and age, e.g. `genullt +4dB 2:15`.
   or a piece of foil works, even through a 5 mm plastic case.
 - **JC3248:** touch the left or right half of the screen. The BOOT button
   works as the left button.
-
-**Hands-free page control:** switch on a phone hotspot with one of these names.
-It takes effect once the background scan finds it (≤ 9 s), does not appear in
-the list, and the header shows `HOTS`.
-
-| Hotspot name | Effect |
-|---|---|
-| `SDR-HOLD` | hold the current page |
-| `SDR-WF` / `SDR-NETZE` / `SDR-KANAL` | show and hold that page |
 
 ### On-screen words
 

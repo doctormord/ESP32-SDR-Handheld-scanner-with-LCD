@@ -1,10 +1,13 @@
-/* TTGO T-Display Wi-Fi survey. Three pages that cycle by themselves:
- *   WASSERFALL  spectrum waterfall 2400-2484 MHz with the channel 1-13 grid
- *               and the Bluetooth LE advertising channels marked, newest row
- *               on top, airtime per channel along the bottom
- *   NETZE       networks seen: channel, SSID, RSSI and the measured airtime
- *               of their channel
- *   KANAELE     per channel: airtime bar with peak, networks, best of 1/6/11
+/* Wi-Fi survey and sniffer UI of the T-Display and the JC3248. Survey pages:
+ *   WASSERFALL VOLL   phosphor spectrum over an occupancy waterfall
+ *                     2400-2484 MHz, channel 1-13 grid, BLE advertising
+ *                     channels marked, best of 1/6/11 at the plot's foot
+ *   NETZE             networks seen: channel, SSID, RSSI and the measured
+ *                     airtime of their channel
+ *   KANAELE WIFI      per channel: airtime bar with peak, networks, best
+ *   KANAELE ZIGBEE    802.15.4 channels 11-26: level and activity
+ *   PEGEL WIFI SINGLE RSSI of one network, every frame it sends
+ * Sniffer pages (finder, detector, bearing, BLE list) further down.
  * Every page keeps measuring: each frame dwells on one 80 MS/s window (LO
  * 2442 MHz, 2408-2476 usable) and analyses the same snapshots twice, as burst-aware
  * band power per channel (airtime, as in esp-sdr-glow's WIFI page) and as a
@@ -15,14 +18,12 @@
  * airtime in percent; everything on the air counts (Wi-Fi of every network,
  * Bluetooth, Zigbee, microwave ovens), 100 % minus it is what is left.
  * SSIDs come from normal Wi-Fi scans of a few channels at a time (the radio
- * cannot capture meanwhile); a network that is missed twice in a row drops
- * out of the list. A full sweep takes CONFIG_ESP_SDR_SCAN_INTERVAL_S.
- * Remote control without touching the board: a phone hotspot named SDR-HOLD
- * holds the current page, SDR-WF / SDR-NETZE / SDR-KANAL hold that page, for
- * as long as the scans see it; these networks are left out of the list.
- * Inputs: NEXT (GPIO0 or touch GPIO32) tap: next page and hold it for a
- * minute; held 1.5 s: automatic cycling on/off. SCAN (GPIO35 or touch GPIO33)
- * tap: full scan now. */
+ * cannot capture meanwhile, so the picture stops for a moment); they run in
+ * the background only while NETZE is shown, once at start and on request. A
+ * network that is missed twice in a row drops out of the list. A full sweep
+ * takes CONFIG_ESP_SDR_SCAN_INTERVAL_S.
+ * Inputs (see handle_keys): left = next page, held: colour theme or the
+ * page's own choice; right = survey <-> sniffer, held: full scan or zeroing. */
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -462,16 +463,10 @@ typedef struct {
 UI_BSS static entry_t table[TABLE_MAX];
 static int table_n;
 UI_BSS static sdr_local_ap_t found[SCAN_MAX];
-UI_BSS static sdr_local_ap_t aps[TABLE_MAX]; /* shown: no control hotspots, strongest first */
+UI_BSS static sdr_local_ap_t aps[TABLE_MAX]; /* shown, strongest first */
 static int ap_count = -1;      /* -1: no scan yet */
 static uint8_t ap_per_ch[CHANNELS + 2];
 static int scan_part;
-
-enum { REMOTE_NONE = -1, REMOTE_HOLD = -2 };
-static int remote = REMOTE_NONE; /* page asked for by a hotspot name */
-static const struct { const char *ssid; int page; } remote_names[] = {
-    {"SDR-HOLD", REMOTE_HOLD}, {"SDR-WF", PAGE_WF}, {"SDR-NETZE", PAGE_NETS}, {"SDR-KANAL", PAGE_CHAN},
-};
 
 static int ap_cmp(const void *a, const void *b) {
     return ((const sdr_local_ap_t *)b)->rssi - ((const sdr_local_ap_t *)a)->rssi;
@@ -503,23 +498,14 @@ static void table_merge(const sdr_local_ap_t *got, int n, uint16_t mask) {
     for (int i = 0; i < table_n; i++) if (table[i].misses < 2) table[kept++] = table[i];
     table_n = kept;
 
-    int want = REMOTE_NONE;
     ap_count = 0;
     memset(ap_per_ch, 0, sizeof(ap_per_ch));
     for (int i = 0; i < table_n; i++) {
         const sdr_local_ap_t *a = &table[i].ap;
-        int hit = REMOTE_NONE - 1;
-        for (unsigned j = 0; j < sizeof(remote_names) / sizeof(remote_names[0]); j++)
-            if (!strcmp(a->ssid, remote_names[j].ssid)) hit = remote_names[j].page;
-        if (hit != REMOTE_NONE - 1) {
-            if (want == REMOTE_NONE || hit >= 0) want = hit; /* a page beats HOLD */
-            continue;
-        }
         aps[ap_count++] = *a;
         if (a->channel <= CHANNELS + 1) ap_per_ch[a->channel]++;
     }
     qsort(aps, (size_t)ap_count, sizeof(aps[0]), ap_cmp);
-    remote = want;
 }
 
 /* ---- drawing helpers ------------------------------------------------------ */
@@ -663,19 +649,14 @@ static void draw_header(uint16_t *s, int y0, int h) {
     const bool note = now < theme_note_until;
     if (note) snprintf(t, sizeof(t), "Thema: %s", themes[theme].name);
     else if (scanning) snprintf(t, sizeof(t), "scan..");
+    else if (page == PAGE_ZB) t[0] = 0;
     else snprintf(t, sizeof(t), "%d Netze", ap_count < 0 ? 0 : ap_count);
     const bool clipping = !agc_mode && clip_rate > 0.3f;
     char pg[24];
     snprintf(pg, sizeof(pg), "%d/%d", page + 1, PAGES);
-    const char *tag = clipping ? "CLIP" : remote != REMOTE_NONE ? "HOTS" : auto_cycle && now >= hold_until ? "AUTO" : pg;
-    int room;
-    const int end = header_row(s, y0, h, page_name[page], t, note || scanning ? C_YELLOW : C_CYAN, tag,
-                               clipping ? C_RED : remote != REMOTE_NONE ? C_CYAN : C_DIM, &room);
-    int best = best_channel();
-    if (best && !note && page != PAGE_NETS && page != PAGE_ZB && page != PAGE_COV) {
-        snprintf(t, sizeof(t), "best %d", best);
-        if (text_w(t, 1) + P(6) <= room) text(s, y0, h, end + P(6), P(1), t, C_GREEN, 1);
-    }
+    const char *tag = clipping ? "CLIP" : auto_cycle && now >= hold_until ? "AUTO" : pg;
+    header_row(s, y0, h, page_name[page], t, note || scanning ? C_YELLOW : C_CYAN, tag,
+               clipping ? C_RED : C_DIM, NULL);
 }
 
 /* ---- page: waterfall --------------------------------------------------------- */
@@ -692,6 +673,14 @@ static void wf_strip(uint16_t *s, int y0, int h) {
             row[x] = v ? lut[v] : C_BLACK;
         }
     }
+    /* The quietest of 1/6/11, at the foot of the phosphor plot (which changes
+     * every frame anyway, so header and axis stay still). */
+    const int best = best_channel();
+    if (best && y0 < WF_Y && y0 + h > WF_Y - P(10)) {
+        const int bx = mhz_col(wifi_mhz(best)), tw = text_w("best", 1);
+        rect(s, y0, h, bx - tw / 2 - P(2), WF_Y - P(10), tw + P(4), P(9), C_BLACK);
+        text_c(s, y0, h, bx, WF_Y - P(10), "best", C_GREEN, 1);
+    }
     if (y0 <= WF_Y - 1 && y0 + h > WF_Y - 1) rect(s, y0, h, 0, WF_Y - 1, UW, 1, C_BAR);
     /* Occupancy waterfall, newest row on top. */
     for (int y = y0 > WF_Y ? y0 : WF_Y; y < y0 + h && y < AXIS_Y; y++) {
@@ -703,16 +692,14 @@ static void wf_strip(uint16_t *s, int y0, int h) {
             row[x] = v ? lut[v] : dotted && col_mark[x] ? (col_mark[x] == MARK_BLE ? RGB(60, 0, 60) : RGB(0, 50, 90)) : C_BLACK;
         }
     }
-    /* Channel numbers under the waterfall, coloured by airtime: quiet ones
-     * grey (1, 6, 11 cyan), busy ones green through yellow to red. */
+    /* Channel numbers under the waterfall, fixed: 1, 6, 11 cyan, the rest grey
+     * (the airtime is on KANAELE WIFI). */
     if (y0 + h > AXIS_Y) {
         char t[4];
         for (int c = 1; c <= CHANNELS; c++) {
-            const float air = ch[c - 1].air;
             const int x = mhz_col(wifi_mhz(c));
             snprintf(t, sizeof(t), "%d", c);
-            const bool main_ch = c == 1 || c == 6 || c == 11;
-            text_c(s, y0, h, x, AXIS_Y + P(2), t, air >= 0.05f ? air_colour(air) : main_ch ? C_CYAN : C_DIM, 1);
+            text_c(s, y0, h, x, AXIS_Y + P(2), t, c == 1 || c == 6 || c == 11 ? C_CYAN : C_DIM, 1);
         }
         for (int x = 0; x < UW; x++)
             if (col_mark[x] == MARK_BLE) rect(s, y0, h, x - P(1), AXIS_Y, P(3), P(1), C_BLE);
@@ -772,8 +759,8 @@ static void nets_strip(uint16_t *s, int y0, int h) {
 #define CH_AP_Y P(12)
 #define CH_BAR_Y P(22)
 #define CH_BAR_H P(88)
-#define CH_NUM_Y (CH_BAR_Y + CH_BAR_H + P(3))
-#define CH_PCT_Y (CH_NUM_Y + P(10))
+#define CH_PCT_Y (CH_BAR_Y + CH_BAR_H + P(3))   /* airtime / activity in %: changes */
+#define CH_NUM_Y (CH_PCT_Y + P(10))             /* channel numbers: fixed, at the bottom */
 #define CH_FULL 1.0f          /* airtime that fills a bar */
 
 static int air_h(float air) {
@@ -815,7 +802,7 @@ static void chan_strip(uint16_t *s, int y0, int h) {
             text_c(s, y0, h, cx, CH_AP_Y, t, C_TEXT, 1);
         }
         snprintf(t, sizeof(t), "%d", c);
-        text_c(s, y0, h, cx, CH_NUM_Y, t, c == best ? C_GREEN : main_ch ? C_CYAN : C_DIM, 1);
+        text_c(s, y0, h, cx, CH_NUM_Y, t, main_ch ? C_CYAN : C_DIM, 1);
         snprintf(t, sizeof(t), "%u", (unsigned)(ch[i].air * 100 + 0.5f));
         text_c(s, y0, h, cx, CH_PCT_Y, t, air_colour(ch[i].air), 1);
     }
@@ -1049,7 +1036,6 @@ static void splash_strip(uint16_t *s, int y0, int h) {
         "Links:  naechste Seite",
         "Rechts: Netze <-> Sucher",
         "  lang: Scan / Sucher nullen",
-        "Hotspot SDR-WF/-NETZE/-KANAL",
     };
     text(s, y0, h, P(6), P(6), lines[0], C_YELLOW, 1);
     for (unsigned i = 1; i < sizeof(lines) / sizeof(lines[0]); i++)
@@ -1895,7 +1881,6 @@ static void scan(void) {
     scanning = false;
     if (n >= 0) {
         table_merge(found, n, mask);
-        if (remote >= 0 && remote != page) set_page(remote);
     }
     if (!full) scan_part = (scan_part + 1) % SCAN_PARTS;
     full_scan_pending = false;
@@ -2364,7 +2349,7 @@ bool board_ui_step(bool host_active) {
         else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
     }
     if (!sniffer) {
-        if (auto_cycle && remote == REMOTE_NONE && now >= hold_until && now - page_at > PAGE_US)
+        if (auto_cycle && now >= hold_until && now - page_at > PAGE_US)
             set_page(page + 1);
         if (page == PAGE_NETS && ap_count > NET_ROWS && now >= net_flip_at) {
             net_first += NET_ROWS;
