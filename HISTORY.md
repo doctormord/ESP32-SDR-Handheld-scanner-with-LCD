@@ -284,3 +284,19 @@ this repository unless noted.
 - `rate` takes 3 captures per LO (`-n`): with live Wi-Fi one capture often
   catches traffic instead of the harmonic. T-Display: every rate 3/3 at one
   LO at least, the misses at 2459 MHz and the like (a network on 9/10).
+
+## 2026-10-24 — JC3248: the 2448 MHz carrier
+
+- FOCUS ZIGBEE 18 (LO 2443, span 2436–2450): `TDRATE 6 2443` finds the
+  line at +5.000 MHz, +15–16 dB over the median, 3 of 3 captures. On the
+  display a steady needle, with weak lines about 1.1 MHz either side
+  (2446.9 / 2449.1, read off photos) — sidebands of some ~1.1 MHz switching?
+- Powered from a power bank (no USB data): still there, weaker. Not USB
+  traffic; a clock on the board, the cable/host only adds to it.
+- Effect on FOCUS WIFI 7–10 (the channels around 2448): airtime and level
+  come from the mean over ~112 bins; at 40 MS/s the line is +13.6 dB over
+  one bin, which lifts the band mean by ~0.8 dB against a 6 dB busy
+  threshold. Measured (3 readings each): ref −59.3 to −60.9 on 7–10 as on
+  1–4 (−60.0 to −61.0); airtime 20–33 % on 7–9, 49–66 % on 10 — the
+  networks on 6 and 11 overlap there (survey showed 22–25 % on 5–12).
+  No visible effect: not blanked. Dropped from BACKLOG.

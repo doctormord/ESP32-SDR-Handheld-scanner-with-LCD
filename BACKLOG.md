@@ -5,12 +5,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- JC3248: carrier at 2448.0 MHz (51 × 48 MHz, USB?) — confirm the source
-  (e.g. powered from a USB charger, serial off) and blank it like the
-  crystal harmonics if it matters.
-
-## Ideas / maybe
-
 - JC3248: USB serial silent after software restart at 120 MHz — find out
   why (USB-Serial/JTAG re-enumeration? PSRAM timing on warm boot?). Board
   keeps running; replug fixes it.
