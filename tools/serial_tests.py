@@ -124,18 +124,27 @@ def do_rates(b, a):
 
 
 def do_rate(b, a):
+    """Each LO a.n times: one capture can catch live traffic instead of the
+    harmonic; ok k/n counts the captures that found it within one bin."""
     print('TDRATE: strongest line vs the 40 MHz harmonic expected (JC3248: a 2448 MHz carrier may win)')
     for d, msps in ((0, 80), (1, 40), (6, 16)):
         for lo in a.lo:
-            ln = b.line(f'TDRATE {d} {lo}', 'TDRATE', 3)
-            m = re.search(r'strongest ([+-][\d.]+) MHz \(\+([\d.]+) dB.*expected ([+-][\d.]+)', ln)
-            if not m:
+            hits, other, exp = 0, [], None
+            for _ in range(a.n):
+                ln = b.line(f'TDRATE {d} {lo}', 'TDRATE', 3)
+                m = re.search(r'strongest ([+-][\d.]+) MHz \(\+([\d.]+) dB.*expected ([+-][\d.]+)', ln)
+                if not m:
+                    continue
+                got, exp = float(m.group(1)), float(m.group(3))
+                if abs(got - exp) <= msps / 256:
+                    hits += 1
+                else:
+                    other.append(f'{lo + got:.1f}')
+            if exp is None:
                 print(f'{msps:2d} MS/s LO {lo}: no reply')
                 continue
-            got, over, exp = float(m.group(1)), float(m.group(2)), float(m.group(3))
-            bin_mhz = msps / 256
-            ok = 'ok' if abs(got - exp) <= bin_mhz else f'other line at {lo + got:.1f} MHz'
-            print(f'{msps:2d} MS/s LO {lo}: {got:+.3f} MHz (+{over:.1f} dB), expected {exp:+.3f}  {ok}')
+            print(f'{msps:2d} MS/s LO {lo}: expected {exp:+.3f} MHz  ok {hits}/{a.n}'
+                  + (f'  other lines at {" ".join(other)} MHz' if other else ''))
 
 
 def do_focus(b, a):
@@ -181,6 +190,7 @@ def main():
     p.add_argument('--settle', type=float, default=3)
     p = sub.add_parser('rate', help='TDRATE at 80/40/16 MS/s')
     p.add_argument('--lo', type=int, nargs='+', default=[2438, 2442, 2446, 2450])
+    p.add_argument('-n', type=int, default=3, help='captures per LO (default 3)')
     p = sub.add_parser('focus', help='TDFOCUS? on each FOCUS page')
     p.add_argument('-n', type=int, default=3)
     p.add_argument('--settle', type=float, default=3)
