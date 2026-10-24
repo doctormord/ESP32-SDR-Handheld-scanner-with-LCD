@@ -279,3 +279,8 @@ this repository unless noted.
 - JC3248: its USB serial hands out the boot log held back since the reset
   only after the host first writes; the script sends one empty line and
   drops the reply before the first command.
+- T-Display check: survey 46 caps/s / 4.7 ms/s, FOCUS WIFI 45 / 9.2, BLE and
+  Zigbee 43–45 / 22–23 ms/s (as on 2026-10-23); 2 Mbaud zero bytes no issue.
+- `rate` takes 3 captures per LO (`-n`): with live Wi-Fi one capture often
+  catches traffic instead of the harmonic. T-Display: every rate 3/3 at one
+  LO at least, the misses at 2459 MHz and the like (a network on 9/10).
