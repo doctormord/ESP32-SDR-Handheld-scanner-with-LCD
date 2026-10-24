@@ -36,6 +36,10 @@ class Board:
         s.open()
         self.s = s
         time.sleep(boot)
+        # The JC3248's USB serial hands out the held-back boot log only after
+        # the host has written something: one empty line, then drop it all.
+        s.write(b'\n')
+        self.read(1.0)
         s.reset_input_buffer()
 
     def read(self, secs, until=None):
@@ -91,6 +95,7 @@ def do_send(b, a):
         t = float(secs) if secs else a.wait
         if cmd:
             print(f'>>> {cmd}', flush=True)
+            b.s.reset_input_buffer()
             b.s.write((cmd + '\n').encode())
         for ln in b.read(t):
             print(ln, flush=True)
@@ -129,7 +134,7 @@ def do_rate(b, a):
                 continue
             got, over, exp = float(m.group(1)), float(m.group(2)), float(m.group(3))
             bin_mhz = msps / 256
-            ok = 'ok' if abs(got - exp) <= bin_mhz else f'carrier at {lo + got:.1f} MHz'
+            ok = 'ok' if abs(got - exp) <= bin_mhz else f'other line at {lo + got:.1f} MHz'
             print(f'{msps:2d} MS/s LO {lo}: {got:+.3f} MHz (+{over:.1f} dB), expected {exp:+.3f}  {ok}')
 
 

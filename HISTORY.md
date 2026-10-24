@@ -265,3 +265,17 @@ this repository unless noted.
   couple into the board at 1 cm whatever the LO (a 5G NSA phone also sends
   on LTE). Useless as a 5G detector.
 - Both boards: dropped (BACKLOG). `TDPROBE` stays.
+
+## 2026-10-24 — FOCUS mockup, tools/serial_tests.py
+
+- README: FOCUS WIFI mockup (`images/page-focus.png`, drawn after
+  `focus_strip()`), numbered like the other pages. DETECTOR / BLE LIST
+  mockups showed the old sniffer page count (S2/4, S4/4): now S2/7, S7/7.
+- `tools/serial_tests.py`: the development helpers in the repo — `send`,
+  `rates` (captures/s per page, listening time), `rate` (TDRATE at 80/40/16
+  MS/s over four LOs), `focus`, `spinoise`, `span`, `probe`.
+- JC3248 check: survey 44 caps/s / 8.9 ms/s, FOCUS WIFI 46–48 / 18.5–19.4,
+  BLE and Zigbee 48 / 48.4 ms/s (as measured by hand on 2026-10-23).
+- JC3248: its USB serial hands out the boot log held back since the reset
+  only after the host first writes; the script sends one empty line and
+  drops the reply before the first command.
