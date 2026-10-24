@@ -8,10 +8,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 - JC3248: carrier at 2448.0 MHz (51 × 48 MHz, USB?) — confirm the source
   (e.g. powered from a USB charger, serial off) and blank it like the
   crystal harmonics if it matters.
-- Mockup for the FOCUS pages in `tools/readme_images.py` + README image.
-- Helper scripts used during development lived outside the repo (Windows
-  temp): consider adding a `tools/serial_tests.py` with the measurement
-  routines (fps/captures, `TDSPINOISE`, `TDRATE`, `TDFOCUS?`, sniffer rates).
 
 ## Ideas / maybe
 

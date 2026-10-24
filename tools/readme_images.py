@@ -226,7 +226,7 @@ def page_channels():
 def page_detector():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'DETECTOR PEAKS', 'zeroed +4dB G34 1:12', C_GREEN, 'S2/4')
+    header(d, 'DETECTOR PEAKS', 'zeroed +4dB G34 1:12', C_GREEN, 'S2/7')
     text(d, P(4), P(10) + P(5), '+18', C_YELLOW, BIG)
     text(d, P(8) + d.textlength('+18', font=BIG), P(10) + P(20), 'dB', C_DIM)
     text(d, P(110), P(10) + P(6), 'Peak +27 dB', C_TEXT)
@@ -261,7 +261,7 @@ def page_detector():
 def page_ble():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'BLE LIST', '18 active, 31 total', C_GREEN, 'S4/4')
+    header(d, 'BLE LIST', '18 active, 31 total', C_GREEN, 'S7/7')
     devs = [(-41, -38, 'Galaxy Watch6 (4F2A)', '0964ebab12cb', 0, 'new'), (-50, -46, '(Microsoft)', '1adf399a6d9e', 0, ''),
             (-52, -47, '?', '32f43d652743', 0, ''), (-58, -54, 'FNB58-052309', '98dab0076b3f*', 0, ''),
             (-61, -57, 'ATC_548972', 'a4c138548972*', 2, ''), (-69, -63, '(Apple)', '6f869654b01d', 0, ''),
@@ -356,6 +356,74 @@ def page_coverage():
                 (W // 2, hy + 20), (W - P(48), H - P(6))], 'page-coverage.png')
 
 
+# --------------------------------------------------------------------------- FOCUS WIFI
+def page_focus():
+    img = Image.new('RGB', (W, H), C_BG)
+    d = ImageDraw.Draw(img)
+    header(d, 'FOCUS', 'WIFI 6  40 MS/s', C_CYAN, 'S4/7')
+    by = P(14)
+    air = 0.64
+    text(d, P(4), by, str(round(air * 100)), air_colour(air), BIG)
+    text(d, P(8) + d.textlength('64', font=BIG), by + P(15), '% airtime', C_DIM)
+    tx = W // 2 + P(10)
+    text(d, tx, by, 'level +21 dB', C_TEXT)
+    text(d, tx, by + P(11), 'floor -62 dB', C_DIM)
+    text(d, tx, by + P(22), 'listen 20.3 ms/s', C_GREEN)
+    # Span 0.84 x 40 MHz around the LO at the channel centre.
+    lo, span = 2437.0, 0.84 * 40
+    f0, f1 = lo - span / 2, lo + span / 2
+    fx = lambda f: (f - f0) * W / span
+    # Channel 6 busy and strong, channel 3's upper half weaker at the left
+    # edge, BLE 38 (2426 MHz) now and then.
+    aps = [(2437, 0.55, 0.62), (2422, 0.3, 0.4)]
+    gy, gh = P(48), P(26)
+    wy, ay = gy + gh + 1, H - P(10)
+    heat = [[0.0] * gh for _ in range(W)]
+    for x in range(W):
+        f = f0 + (x + 0.5) * span / W
+        for _ in range(60):
+            lvl = 0.10 + 0.04 * random.gauss(0, 1)
+            for c, busy, strength in aps:
+                if abs(f - c) < 9.5 and random.random() < busy:
+                    edge = 1 - (abs(f - c) / 10) ** 8
+                    lvl = max(lvl, strength * edge * (0.8 + 0.15 * random.random()))
+            if abs(f - 2426) < 1 and random.random() < 0.05:
+                lvl = max(lvl, 0.6)
+            y = int((1 - max(0, min(0.98, lvl))) * gh)
+            for yy in range(y, gh):
+                heat[x][yy] += 1.0 if yy == y else 0.04
+    for x in range(W):
+        for y in range(gh):
+            v = heat[x][y] / 14
+            if v > 0.02:
+                img.putpixel((x, gy + y), lut(min(1, v)))
+    d.line([0, wy - 1, W, wy - 1], fill=C_BAR)
+    for r in range(ay - wy):
+        y = wy + r
+        for c, busy, strength in aps:
+            if random.random() < busy * 0.6:
+                v = strength * (0.35 + 0.5 * random.random())
+                for x in range(max(0, int(fx(c - 9))), min(W, int(fx(c + 9)))):
+                    if random.random() < 0.8:
+                        img.putpixel((x, y), lut(v * (0.85 + 0.15 * random.random())))
+        if random.random() < 0.06:
+            d.line([fx(2425), y, fx(2427), y], fill=lut(0.6))
+        if random.random() < 0.3:
+            d.point((random.randrange(W), y), fill=lut(0.2))
+    # The channel between two dotted cyan marks.
+    xa, xb = int(fx(2437 - 9)), int(fx(2437 + 9))
+    for y in range(gy, ay):
+        if (y // S) & 3 == 0:
+            img.putpixel((xa, y), C_CYAN)
+            img.putpixel((xb, y), C_CYAN)
+    text(d, P(2), ay + P(1), f'{f0:.0f}', C_DIM)
+    text(d, W - P(2), ay + P(1), f'{f1:.0f}', C_DIM, anchor='ra')
+    text(d, (xa + xb) / 2, ay + P(1), 'WIFI 6', C_CYAN, anchor='ma')
+    frame(img, [(None, P(5)), (P(56), by + P(27)), (W - P(30), by + P(8)), (W - P(20), by + P(26)),
+                (fx(2441), gy + P(8)), (fx(2445), wy + 70), (xb, ay - 20), (W // 2 + 50, ay + P(6))],
+          'page-focus.png')
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     page_waterfall()
@@ -364,4 +432,5 @@ if __name__ == '__main__':
     page_zigbee()
     page_coverage()
     page_detector()
+    page_focus()
     page_ble()
