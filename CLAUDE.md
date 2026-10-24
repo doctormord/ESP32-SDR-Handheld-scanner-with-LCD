@@ -25,6 +25,28 @@ User-facing documentation is [README.md](README.md); this file is for whoever
 - Untested work goes on a branch, not on `main`. `main` + `firmware/*.bin`
   are what the README tells people to flash.
 
+## Writing style (README, release notes, docs)
+
+The owner wants text that reads like a person wrote it, not like generated
+text. Plain information, no show. Rules:
+
+- Full, simple sentences. One idea per sentence. Short paragraphs.
+- Explain a term the first time it appears ("airtime: how much of the time
+  the channel is busy"). Prefer everyday words over jargon in user text
+  ("recording" rather than "capture", "frequency step" rather than "bin").
+- No slogans or punchy fragments ("One channel, heard longer."), no
+  marketing ("pocket", "magic", "pure SDR"), no dramatic framing.
+- Do not chain clauses with semicolons, colons and em dashes, and do not pile
+  up parentheses. Split into separate sentences instead.
+- Bold only for a few real labels, not as decoration at the start of every
+  line.
+- Numbers with units and plain words: "15 to 30 dB", "about 2 s".
+- User text says what the board does and how to use it. Internals (locks,
+  cache lines, display chunk windows, BSS) belong in this file or in code
+  comments, not in the README.
+- Keep the facts and measured numbers exact. Simple wording is no reason to
+  drop or round them.
+
 ## Boards
 
 | | LILYGO TTGO T-Display | Guition JC3248W535 |
@@ -114,7 +136,24 @@ Runtime model (both boards, dual core):
   Boya flash). Side effect: after a software restart (BLE LIST in/out) the
   USB serial port may stay silent until replug; the board runs on.
   To flash a board whose USB is stuck: hold BOOT, replug, release BOOT.
-- 64-byte data cache lines on the JC3248 (+1.5 fps).
+- 64-byte data cache lines on the JC3248 (+1.5 fps). With them ESP-SDR's
+  bare-metal core-1 helper for SPEC streaming to a host is off; SPEC
+  streaming runs on one core.
+- JC3248 partial updates: 40 chunks of 12 panel rows (each a 12-px vertical
+  slice of the landscape picture); unchanged chunks are skipped, the rest go
+  out behind a RASET row window; full frame every 2 s. `TDLCDWIN [x y w h]`
+  draws a red block through the window commands (to check another panel).
+  Column windows (CASET) work only aligned to 16 panel columns, and sending
+  only changed columns was not faster (CPU time moves into rotate/compare),
+  so only row windows are used.
+- The phosphor fades outside `ui_lock`, so the measurement never waits for
+  the fade pass.
+- Waterfall persistence: each new row mixed 60/40 with the previous one,
+  never below 82 % of it, 1-2-1 blur across.
+- 802.15.4 / FOCUS blanking (`zb.c`): DC ±(0.25 MHz + bin/2) and 40 MHz
+  harmonics, same width; the UI's `*_spur[]` column maps repeat the left
+  neighbour there. The JC's 2448.0 MHz on-board line is deliberately not
+  blanked (README "Signals the receiver makes itself", HISTORY 2026-10-24).
 - The analysis is the bottleneck of listening time (~19 ms per 0.2 ms
   capture on the JC); captures/s × length = listening ms/s (JC ~9 ms/s,
   T-Display ~4.6 ms/s at 0.1 ms). Skipping "empty" segments by their
