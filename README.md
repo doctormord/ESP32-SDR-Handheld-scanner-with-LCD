@@ -253,10 +253,19 @@ lower, so a weak 2 MHz signal stands further out of it. FOCUS is pure SDR: it
 measures energy on the channel, whoever sends it; the level of one named
 network is LEVEL WIFI SINGLE.
 
-Each page shows the channel's **airtime** (big number), its **level** over the
-floor, the floor, and the **listening time** per second; below, a phosphor
-spectrum and an occupancy waterfall of the span with the channel between two
-cyan marks. **Hold the next-page key / the mode key** to step to the next /
+<img src="images/page-focus.png" width="60%" alt="FOCUS WIFI page with numbered parts">
+
+1. **Header:** FOCUS, the channel and the sample rate, page number.
+2. **Airtime:** how much of the time the channel is busy (big number).
+3. **Level** of the channel over the learned floor, and the floor itself.
+4. **Listening time** per second (captures per second × their length).
+5. **Phosphor spectrum** of the span, as on WATERFALL FULL. Here channel 6
+   busy, the upper half of channel 3 weaker at the left edge.
+6. **Occupancy waterfall** of the span, newest row on top.
+7. **The channel** between two dotted cyan marks.
+8. **Axis:** span edges in MHz, the channel's name under it.
+
+**Hold the next-page key / the mode key** to step to the next /
 previous channel; held on, it steps once a second, so you can keep the finger
 down until the channel you want comes up. Each page remembers its channel
 across restarts. The first time, FOCUS WIFI starts on the strongest network's
@@ -550,6 +559,8 @@ Another ESP-SDR display port:
 Send a line over the serial port (T-Display: 2 Mbaud, JC3248: USB serial/JTAG,
 any baud). Opening the port with DTR/RTS active resets the board; a terminal with
 those lines off (or a script with `dtr=False, rts=False`) keeps it running.
+[tools/serial_tests.py](tools/serial_tests.py) sends commands and runs the
+measurements below (captures/s per page, `TDRATE`, `TDFOCUS?`, …).
 
 | Command | Reply |
 |---|---|
@@ -627,6 +638,7 @@ on the T-Display mostly at the band edges (channels 1–3 and 13).
 | `sdkconfig.defaults.tdisplay`, `sdkconfig.defaults.jc3248` | board configurations |
 | [firmware/](firmware) | ready-made images |
 | [images/](images) | README pictures; [tools/readme_images.py](tools/readme_images.py) draws them |
+| [tools/serial_tests.py](tools/serial_tests.py) | measurements over the serial diagnostics: captures/s and listening per page, `TDRATE`, `TDFOCUS?`, `TDSPINOISE`, `TDSPAN`, `TDPROBE` |
 
 The other targets of ESP-SDR (C2, C3, C5, C6, H2, S2, S31, ODROID-GO) are still
 in the tree and build as described in
