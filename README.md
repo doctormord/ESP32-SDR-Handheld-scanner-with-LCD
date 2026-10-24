@@ -604,6 +604,41 @@ So a capture during display traffic would lose 1.5–2 dB of sensitivity,
 show spurs that look like signals, and count display noise as airtime —
 on the T-Display mostly at the band edges (channels 1–3 and 13).
 
+### The receiver's own lines: what is blanked
+
+Every capture contains a few lines the receiver makes itself. Where they
+would read as a transmitter, the analysis (`zb.c`) leaves those FFT bins out
+of the spectrum, the levels, the airtime and the floor, and the display draws
+those columns from their neighbours (no black gaps). The rule is the same on
+both boards:
+
+- **DC:** the receiver's own leak at the LO, ±(0.25 MHz + half a bin):
+  ±0.41 MHz at 80 MS/s, ±0.33 at 40, ±0.28 at 16.
+- **40 MHz crystal harmonics:** 2400, 2440 and 2480 MHz, the same width,
+  wherever they fall in the span.
+- **Span edges:** only ±42 % of the sample rate around the LO is used
+  (the analogue filter's roll-off).
+
+Where that lands, per page:
+
+| Page | LO(s) | Blanked |
+|---|---|---|
+| WATERFALL FULL, NETWORKS, CHANNELS WIFI | 2442 | DC 2442, harmonic 2440 (inside channels 5–8); 2400/2480 lie outside the window 2408–2476 |
+| CHANNELS ZIGBEE, FINDER, BEARING | 2422 and 2462 | DC 2422 and 2462 (between Zigbee channels), harmonics 2400, 2440 (Zigbee 18's centre) and 2480 (BLE 39) |
+| FOCUS WIFI | channel centre | DC in the channel's centre; 2440 on channels 5–8, 2480 on channel 13 |
+| FOCUS BLE / ZIGBEE | channel ± 3 MHz | DC outside the channel; 2440 is Zigbee 18's centre, 2480 BLE 39's |
+| DETECTOR PEAKS | 2442 (channelizer) | nothing: DC is tracked and removed; steady lines are part of the room that zeroing learns per 1.25 MHz bin |
+
+A narrow blank costs the 2 MHz channel on it (Zigbee 18, BLE 39) about
+0.8 MHz of its width; a packet there still shows at its edges.
+
+**Not blanked, known:**
+
+| Line | Board | Size | Why not blanked |
+|---|---|---|---|
+| 2448.0 MHz (51 × 48 MHz) with weak lines about ±1.1 MHz | JC3248 | +15–16 dB over the median bin at 16 MS/s, +13.6 at 40 MS/s | made on the board (stays on a power bank, weaker); within a Wi-Fi channel it lifts the mean by ~0.8 dB against the 6 dB busy threshold: no measurable effect on airtime or level. On no BLE or Zigbee channel. It shows in the phosphor of FOCUS ZIGBEE 18 and 20 and FOCUS WIFI 5–11 (inside channels 7–10); on ZIGBEE 19 the LO sits on it and DC blanking takes it |
+| Display bus spurs (JC3248: 2420/2430/2460/2470, T-Display: 2410–2416, 2472–2475) | both | +6 to +10 dB | only while picture data goes out; captures wait for a quiet bus (above) |
+
 ---
 
 ## Limitations
