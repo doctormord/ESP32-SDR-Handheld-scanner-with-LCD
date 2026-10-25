@@ -46,6 +46,7 @@ layout and use made-up but typical data.
 ## Contents
 
 - [How it works](#how-it-works)
+- [On the device](#on-the-device)
 - [Survey mode: networks and channel load](#survey-mode-networks-and-channel-load)
 - [Sniffer mode: find active devices](#sniffer-mode-find-active-devices)
 - [Controls](#controls)
@@ -101,6 +102,24 @@ measurement pauses.
 packet. Each sample carries its gain value, and the firmware scales all
 samples back to the same level. A phone right next to the board doing a
 speed test therefore does not overload the picture.
+
+---
+
+## On the device
+
+Screenshots from a JC3248, taken over the serial port with `TDSCREEN`.
+Network names and device addresses are pixelated. The numbered pictures in
+the sections below are drawings with example data, so that each part can be
+pointed at.
+
+| | | |
+|---|---|---|
+| <img src="images/device/waterfall.png" alt="WATERFALL FULL"> | <img src="images/device/networks.png" alt="NETWORKS"> | <img src="images/device/channels.png" alt="CHANNELS WIFI"> |
+| WATERFALL FULL | NETWORKS | CHANNELS WIFI |
+| <img src="images/device/zigbee.png" alt="CHANNELS ZIGBEE"> | <img src="images/device/coverage.png" alt="LEVEL WIFI SINGLE"> | <img src="images/device/detector.png" alt="DETECTOR PEAKS"> |
+| CHANNELS ZIGBEE | LEVEL WIFI SINGLE | DETECTOR PEAKS (not zeroed) |
+| <img src="images/device/focus.png" alt="FOCUS WIFI"> | <img src="images/device/ble-list-sdr.png" alt="BLE LIST SDR"> | <img src="images/device/ble-list.png" alt="BLE LIST"> |
+| FOCUS WIFI | BLE LIST SDR | BLE LIST |
 
 ---
 

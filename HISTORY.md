@@ -511,3 +511,12 @@ the fixed gain 50 of v1.3.0.
   says so under the recordings.
 - README: live GIFs of WATERFALL FULL and the three FOCUS pages (JC3248),
   next to the numbered mockups.
+- `serial_tests.py readme DIR`: README pages from the device with names and
+  addresses pixelated (8-px blocks; NETWORKS SSIDs, LEVEL name and MAC, BLE
+  lists names and addresses); `readme_images.py --shots DIR` can put the
+  numbered markers on them. Tried replacing the mockups: the markers and
+  the README's example sentences follow the mockups' example data (e.g.
+  CHANNELS' green column on 11, real data had it on 1), so the mockups stay
+  for the numbered explanations. README: new section "On the device", a
+  gallery of the real (pixelated) screenshots of nine pages (JC3248,
+  236 KB).
