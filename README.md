@@ -128,6 +128,11 @@ WATERFALL FULL, NETWORKS, CHANNELS WIFI, CHANNELS ZIGBEE and LEVEL WIFI SINGLE.
 5. **Channel numbers 1 to 13:** channels 1, 6 and 11 in cyan, the rest grey.
    The airtime per channel is on CHANNELS WIFI.
 
+<img src="images/live-waterfall.gif" width="60%" alt="WATERFALL FULL recorded on the JC3248">
+
+Recorded on a JC3248 with `TDSCREEN` (5 s, about 3 frames per second, the
+board itself draws about 24).
+
 ### NETWORKS
 
 <img src="images/page-networks.png" width="60%" alt="Networks page with numbered parts">
@@ -303,6 +308,17 @@ level of one particular network, use LEVEL WIFI SINGLE.
 6. Waterfall, newest row at the top.
 7. The channel lies between the two dotted cyan lines.
 8. Axis with the edges of the span in MHz and the channel name.
+
+<p>
+  <img src="images/live-focus-wifi.gif" width="60%" alt="FOCUS WIFI on channel 6, recorded on the JC3248"><br>
+  <img src="images/live-focus-ble.gif" width="49%" alt="FOCUS BLE on channel 38, recorded on the JC3248">
+  <img src="images/live-focus-zigbee.gif" width="49%" alt="FOCUS ZIGBEE on channel 15, recorded on the JC3248">
+</p>
+
+FOCUS WIFI 6, FOCUS BLE 38 and FOCUS ZIGBEE 15, recorded on a JC3248 with
+`TDSCREEN`. While a frame goes out over USB the receiver waits, because the
+USB traffic would show as lines in the spectrum. So the listening time
+shown in these recordings is much lower than in normal use.
 
 Hold the next-page key for the next channel and the mode key for the previous
 one. If you keep holding, it moves on once per second, so you can hold until
@@ -648,7 +664,7 @@ usual measurements, for example recordings per second on each page, or the
 | Command | What it does |
 |---|---|
 | `TDSTAT?` | Survey status: page, gain, clipping, frame time, touch point (JC3248). |
-| `TDSCREEN` | Screenshot: sends the next frame as it is drawn (a line `TDSCREEN w h`, then w × h pixels in RGB565, high byte first, then `TDSCREEN END` with the CRC-32 of the pixel bytes). `tools/serial_tests.py PORT screen file.png` saves it as a PNG. |
+| `TDSCREEN` / `TDSCREEN 2` | Screenshot: the drawing task sends the next frame as it is drawn (a line `TDSCREEN w h`, then w × h pixels in RGB565, high byte first, then `TDSCREEN END` with the CRC-32 of the pixel bytes). `2` averages 2 × 2 pixels (a quarter of the data). Recordings wait while a frame goes out. `tools/serial_tests.py PORT screen file.png` saves a PNG, `… gif file.gif --secs 5 --colors 32` an animated GIF. |
 | `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | Switch the survey page / the mode / the sniffer page (0 FINDER, 1 DETECTOR, 2 BEARING, 3 to 5 FOCUS WIFI, BLE, ZIGBEE, 6 BLE LIST SDR, 7 BLE LIST). |
 | `TDSCAN` / `TDSCANAUTO 0\|1` | Scan for networks now / periodic scanning off or on. |
 | `TDSCANCH c [ms]` | Scan only channel `c` (passively for `ms` milliseconds, if given) and list every answer (T-Display). |

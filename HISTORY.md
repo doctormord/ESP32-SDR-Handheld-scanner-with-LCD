@@ -489,3 +489,25 @@ the fixed gain 50 of v1.3.0.
 - JC3248 image flashed at 0x0: `VERSION?` revision da797dc, BLE LIST
   24.5 frames/s, TDSCREEN works. T-Display image not flashed (board not
   connected; TDSCREEN tested there on the branch).
+
+## 2026-10-25 — Recordings from the device (branch `screen-gifs`)
+
+- `TDSCREEN 2`: 2×2 averaged frames, a quarter of the data. JC over USB:
+  full frames 2.9 frames/s, half 7.8; half looks soft (text blocky), the
+  owner chose full resolution, 5 s.
+- `tools/serial_tests.py gif`: frames back to back, one palette for all
+  frames. Waterfall, 8 s: 256 colours 1.09 MB, 32 0.61, 16 0.41; dithering
+  makes them larger (16: 0.55). Grey text turned brown with a plain
+  median-cut palette (anti-aliased text has few exact pixels): the UI's
+  C_* colours that appear, plus half tones of the text colours, are now
+  fixed in the palette. 32 colours keep the waterfall smooth, 16 look
+  stepped. 5 s at 32 colours: 0.22–0.31 MB per page.
+- First recordings showed "listen 0.8 ms/s" on FOCUS WIFI: the main loop
+  waited for each frame. TDSCREEN now returns at once and the drawing task
+  sends; then a comb of lines appeared in the spectrum on every page — the
+  USB traffic itself. Captures now wait while a frame goes out (like the
+  display bus): clean spectrum, but the listening time shown while
+  recording is low (FOCUS WIFI 2.4, BLE 7.1, ZIGBEE 6.0 ms/s). README
+  says so under the recordings.
+- README: live GIFs of WATERFALL FULL and the three FOCUS pages (JC3248),
+  next to the numbered mockups.

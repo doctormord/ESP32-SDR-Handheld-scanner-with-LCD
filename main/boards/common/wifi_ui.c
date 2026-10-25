@@ -164,7 +164,11 @@ static volatile bool capture_waiting;
 static const uint32_t *quiet_capture_div(unsigned n, unsigned divider);
 static const uint32_t *quiet_capture_n(unsigned n) { return quiet_capture_div(n, 0); }
 /* divider: 0 = 80 MS/s, 1 = 40 MS/s, 6 = 16 MS/s (native dump clocks). */
+static volatile bool shot_busy;  /* a TDSCREEN frame is going out over USB */
 static const uint32_t *quiet_capture_div(unsigned n, unsigned divider) {
+    /* USB traffic of a screenshot shows as a comb of lines in the spectrum
+     * (JC, 2026-10-25), like the display bus: wait for it too. */
+    for (int i = 0; shot_busy && i < 200; i++) vTaskDelay(pdMS_TO_TICKS(5));
     capture_waiting = true;
     lock_lcd();
     capture_waiting = false;
@@ -676,7 +680,6 @@ static uint16_t shot_avg(uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
     return (uint16_t)(v << 8 | v >> 8);
 }
 static uint32_t shot_crc;
-static SemaphoreHandle_t shot_done;
 
 static void render(strip_fn fn, int top, int bottom) {
     const bool night = !strcmp(themes[theme].name, "Night");
@@ -2628,7 +2631,7 @@ static void draw_frame(void) {
         const int n = snprintf(h, sizeof(h), "TDSCREEN %d %d\n", W / shot_div, H / shot_div);
         burst_serial_send(h, n);
         shot_crc = 0;
-        shot_on = true;
+        shot_busy = shot_on = true;
     }
     if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR)) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
@@ -2645,8 +2648,7 @@ static void draw_frame(void) {
         char h[40];
         const int n = snprintf(h, sizeof(h), "TDSCREEN END %08lx\n", (unsigned long)shot_crc);
         burst_serial_send(h, n);
-        shot_on = shot_req = false;
-        xSemaphoreGive(shot_done);
+        shot_busy = shot_on = shot_req = false;
     }
     td_lcd_idle();
     render_us = (unsigned)(esp_timer_get_time() - tr);
@@ -3011,16 +3013,13 @@ bool board_ui_command(const char *line) {
         burst_serial_send(buf, n);
         return true;
     }
-    if (!strncmp(line, "TDSCREEN", 8) && (!line[8] || line[8] == ' ')) { /* screenshot of the next frame, see render() */
+    if (!strncmp(line, "TDSCREEN", 8) && (!line[8] || line[8] == ' ')) {
+        /* Screenshot of the next frame, sent by the drawing task (render());
+         * the main loop goes on measuring meanwhile. Send no other command
+         * until "TDSCREEN END" has arrived. */
         shot_div = !strcmp(line + 8, " 2") ? 2 : 1;
-        if (!shot_done) shot_done = xSemaphoreCreateBinary();
-        xSemaphoreTake(shot_done, 0);
         shot_req = true;
         if (draw_task) xTaskNotifyGive(draw_task);
-        if (xSemaphoreTake(shot_done, pdMS_TO_TICKS(3000)) != pdTRUE) {
-            shot_req = false;
-            burst_serial_send("TDSCREEN timeout\n", 17);
-        }
         return true;
     }
     if (!strcmp(line, "TDBS?")) { /* BLE LIST SDR: decoder totals since start */

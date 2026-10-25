@@ -21,6 +21,7 @@ PORT: JC3248 /dev/cu.usbmodem* or /dev/ttyACM* (USB serial/JTAG), T-Display
 /dev/cu.usbserial-* or /dev/ttyUSB* (CP2104, 2 Mbaud).
 """
 import argparse
+import os
 import re
 import sys
 import time
@@ -224,6 +225,42 @@ def do_screen(b, a):
     print(f'{a.out}: {img.width}x{img.height}')
 
 
+def save_gif(frames, durations, out, colors=256, dither=False):
+    """One palette for all frames (taken from a few of them), so the GIF
+    has no per-frame palettes and changes between frames stay small."""
+    from PIL import Image
+    pick = frames[::max(1, len(frames) // 6)]
+    sheet = Image.new('RGB', (pick[0].width, pick[0].height * len(pick)))
+    for i, f in enumerate(pick):
+        sheet.paste(f, (0, i * f.height))
+    # The UI's colours (wifi_ui.c C_*, as RGB565 shows them) stay exact where
+    # they appear, text colours with a half tone for their smoothed edges;
+    # the rest of the palette goes to the spectrum and waterfall shades.
+    # Otherwise grey text turns brown.
+    import numpy as np
+    q = lambda c: tuple((v >> 3 << 3 | v >> 5) if i != 1 else (v >> 2 << 2 | v >> 6) for i, v in enumerate(c))
+    ui = [(0, 0, 0), (255, 255, 255), (220, 220, 220), (110, 110, 110), (24, 24, 48), (255, 220, 0),
+          (0, 200, 230), (40, 220, 40), (230, 60, 230), (255, 140, 0), (255, 40, 40)]
+    text = {(220, 220, 220), (110, 110, 110), (255, 220, 0), (0, 200, 230)}
+    px = np.asarray(sheet).reshape(-1, 3).astype(int)
+    fixed = []
+    for c in ui:
+        n = int((np.abs(px - q(c)).max(axis=1) <= 4).sum())
+        if n > px.shape[0] // 2000 or c == (0, 0, 0):
+            fixed.append(q(c))
+            if c in text:
+                fixed.append(tuple(v // 2 for v in q(c)))
+    fixed = fixed[:colors // 2]
+    rest = sheet.quantize(colors=colors - len(fixed), method=Image.Quantize.MEDIANCUT).getpalette()
+    rest = [tuple(rest[3 * i:3 * i + 3]) for i in range(colors - len(fixed))]
+    flat = [v for c in fixed + rest for v in c]
+    pal = Image.new('P', (1, 1))
+    pal.putpalette(flat + [0] * (768 - len(flat)))
+    d = Image.Dither.FLOYDSTEINBERG if dither else Image.Dither.NONE
+    q = [f.quantize(palette=pal, dither=d) for f in frames]
+    q[0].save(out, save_all=True, append_images=q[1:], duration=durations, loop=0, optimize=True)
+
+
 def do_gif(b, a):
     """Screenshots back to back as an animated GIF, each frame shown for the
     time it really took (so it plays at the board's speed)."""
@@ -241,7 +278,13 @@ def do_gif(b, a):
     durations.append(durations[-1])
     if a.scale != 1:
         frames = [f.resize((f.width * a.scale, f.height * a.scale)) for f in frames]
-    frames[0].save(a.out, save_all=True, append_images=frames[1:], duration=durations, loop=0, optimize=True)
+    if a.raw:  # the frames as PNGs plus their durations, to try palettes later
+        os.makedirs(a.raw, exist_ok=True)
+        for i, f in enumerate(frames):
+            f.save(os.path.join(a.raw, f'{i:04d}.png'))
+        with open(os.path.join(a.raw, 'durations.txt'), 'w') as fh:
+            fh.write(' '.join(map(str, durations)))
+    save_gif(frames, durations, a.out, a.colors, a.dither)
     print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s')
 
 
@@ -282,6 +325,9 @@ def main():
     p.add_argument('--secs', type=float, default=15)
     p.add_argument('--scale', type=int, default=1)
     p.add_argument('--half', action='store_true', help='half resolution from the board (faster)')
+    p.add_argument('--colors', type=int, default=256, help='palette size (one palette for all frames)')
+    p.add_argument('--dither', action='store_true')
+    p.add_argument('--raw', help='also save the frames as PNGs into this folder')
     p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
     p.add_argument('--wait', type=float, default=0, help='seconds to wait before recording')
     a = ap.parse_args()
