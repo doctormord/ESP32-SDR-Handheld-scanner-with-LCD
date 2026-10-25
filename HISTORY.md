@@ -376,3 +376,13 @@ this repository unless noted.
   14 active / 17 total, same place, owner's reading. The list also fills
   and updates more slowly: ~28 % of the time listened, and a packet must
   fit into one 1 ms capture.
+- Sensitivity check (owner's point 2), JC, ch 38, 20 s runs interleaved:
+  `TDBLESDR … filt bw` with filt 1 = a 24-tap Hamming low-pass (1 MHz at
+  16 MS/s) and decimation by 4 ahead of the decoder (R = 1) instead of its
+  8-sample boxcar. Valid packets per capture: boxcar 0.044/0.046, low-pass
+  0.054/0.052 (+18 %). But the plain C FIR costs 7.7 ms per capture
+  (boxcar 1.6), so only a third of the captures: fewer packets overall.
+  12 MHz analogue filter: worse with both (0.031/0.032), it cuts into the
+  channel. So listening time, not sensitivity, is what BLE LIST SDR lacks.
+  The low-pass stays as a TDBLESDR option; an ESP-DSP FIR might make it
+  cheap enough later.

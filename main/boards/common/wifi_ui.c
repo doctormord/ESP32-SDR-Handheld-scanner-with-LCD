@@ -2052,6 +2052,42 @@ static void bl_step(void) {
     else if (bl_n < 0) bl_n = 0;
 }
 
+/* Low-pass ahead of the GFSK decoder (experiment, TDBLESDR filt 1): a
+ * Hamming-windowed sinc with 1 MHz cut-off at 16 MS/s, decimated by 4 into
+ * dump words for gf_block with R = 1. The decoder's own boxcar over 8
+ * samples lets the noise from 2 to 7.5 MHz off the channel fold in. */
+#define BS_FIR 24
+static int16_t bs_fir_k[BS_FIR];
+static void bs_fir_init(void) {
+    if (bs_fir_k[BS_FIR / 2]) return;
+    float h[BS_FIR], sum = 0;
+    const float fc = 1.0f / 16;  /* 1 MHz / 16 MS/s */
+    for (int k = 0; k < BS_FIR; k++) {
+        const float x = k - (BS_FIR - 1) / 2.0f;
+        const float w = 0.54f - 0.46f * cosf(2 * (float)M_PI * k / (BS_FIR - 1));
+        h[k] = sinf(2 * (float)M_PI * fc * x) / ((float)M_PI * x) * w;
+        sum += h[k];
+    }
+    /* Gain 2: the filter takes out most of the noise, keep the LSBs. */
+    for (int k = 0; k < BS_FIR; k++) bs_fir_k[k] = (int16_t)lrintf(h[k] / sum * 32768);
+}
+static unsigned bs_decimate(const uint32_t *in, unsigned n, uint32_t *out) {
+    unsigned m = 0;
+    for (unsigned j = 0; j + BS_FIR <= n; j += 4) {
+        int32_t si = 0, sq = 0;
+        for (int k = 0; k < BS_FIR; k++) {
+            const uint32_t w = in[j + k];
+            si += ((int32_t)(w << 22) >> 22) * bs_fir_k[k];
+            sq += ((int32_t)(w << 12) >> 22) * bs_fir_k[k];
+        }
+        int i = (si + 8192) >> 14, q = (sq + 8192) >> 14;
+        i = i > 511 ? 511 : i < -512 ? -512 : i;
+        q = q > 511 ? 511 : q < -512 ? -512 : q;
+        out[m++] = (uint32_t)(i & 0x3ff) | (uint32_t)(q & 0x3ff) << 10;
+    }
+    return m;
+}
+
 /* ---- sniffer page: BLE LIST SDR ---------------------------------------------- */
 /* BLE advertising decoded from the receiver's own samples (gfsk.h, from the
  * ESPsoup firmware), without a Bluetooth stack: on the T-Display, which has
@@ -2943,8 +2979,8 @@ bool board_ui_command(const char *line) {
      * (experiment, gfsk.h). Tuned to the middle of channel 37/38/39, fixed
      * gain, 16 MS/s decimated to 4 MS/s (4 samples per bit); display paused.
      * Counts sync hits, packets, valid CRCs and different advertisers. */
-    int bch, bsec, bgain = 50, bsign = 1;
-    if (sscanf(line, "TDBLESDR %d %d %d %d", &bch, &bsec, &bgain, &bsign) >= 2 && bch >= 37 && bch <= 39 &&
+    int bch, bsec, bgain = 50, bsign = 1, bfilt = 0, bbw = 15;
+    if (sscanf(line, "TDBLESDR %d %d %d %d %d %d", &bch, &bsec, &bgain, &bsign, &bfilt, &bbw) >= 2 && bch >= 37 && bch <= 39 &&
         bsec > 0 && bsec <= 60 && !sdr_local_ble_boot()) {
         const unsigned n = sdr_local_max_samples() < 16380 ? sdr_local_max_samples() : 16380;
         enum { HITS = 256, PKTS = 16, POOL = 1024, MACS = 64 };
@@ -2954,7 +2990,9 @@ bool board_ui_command(const char *line) {
         gf_pkt_t *pk = malloc(PKTS * sizeof(gf_pkt_t));
         gf_t g = {.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = 255, .chan = bch,
                   .sync = 0x8E89BED6u, .bits = bits, .sbuf = sbuf};
-        if (!(bits && pool && macs && sbuf && hits && pk) || !gf_init(&g)) {
+        uint32_t *dec = bfilt ? malloc((n / 4 + 1) * sizeof(uint32_t)) : NULL;
+        if (bfilt) {g.fin = 4000000; g.R = 1; bs_fir_init();}
+        if (!(bits && pool && macs && sbuf && hits && pk) || (bfilt && !dec) || !gf_init(&g)) {
             burst_serial_send("TDBLESDR no memory\n", 19);
         } else {
             gf_sign = bsign < 0 ? -1 : 1;
@@ -2965,7 +3003,7 @@ bool board_ui_command(const char *line) {
             int rssi_sum = 0;
             lock_lcd();
             td_lcd_idle();
-            sdr_local_set_bandwidth(15);
+            sdr_local_set_bandwidth(bbw);
             sdr_local_set_gain(bgain);
             sdr_local_tune(ble_mhz[bch - 37]);
             const int64_t end = esp_timer_get_time() + (int64_t)bsec * 1000000;
@@ -2974,7 +3012,8 @@ bool board_ui_command(const char *line) {
                 if (!iq) break;
                 caps_n++;
                 const int64_t t0 = esp_timer_get_time();
-                const unsigned np = gf_block(&g, iq, n, hits, HITS, pk, PKTS, pool, POOL);
+                const unsigned np = bfilt ? gf_block(&g, dec, bs_decimate(iq, n, dec), hits, HITS, pk, PKTS, pool, POOL)
+                                          : gf_block(&g, iq, n, hits, HITS, pk, PKTS, pool, POOL);
                 dsp_us += esp_timer_get_time() - t0;
                 for (unsigned i = 0; i < np; i++) {
                     if (pk[i].flags & GF_F_CRC) btype[pool[pk[i].off] & 15]++;
@@ -3004,9 +3043,9 @@ bool board_ui_command(const char *line) {
             unlock_lcd();
             gf_sign = 1;
             const int k = snprintf(buf, sizeof(buf),
-                                   "TDBLESDR ch %d gain %d sign %d caps %u (%u samples, %.1f ms listened) hits %u packets %u "
+                                   "TDBLESDR ch %d filt %d bw %d gain %d sign %d caps %u (%u samples, %.1f ms listened) hits %u packets %u "
                                    "crc_ok %u rejected %u advertisers %u rssi %.1f dBFS dsp %.2f ms/capture\n",
-                                   bch, bgain, (int)gf_sign, caps_n, n, caps_n * n / 16000.0f, (unsigned)g.hits,
+                                   bch, bfilt, bbw, bgain, (int)gf_sign, caps_n, n, caps_n * n / 16000.0f, (unsigned)g.hits,
                                    (unsigned)g.pkts, (unsigned)g.crc_ok, (unsigned)g.rejected, nmac,
                                    g.crc_ok ? rssi_sum / 10.0f / g.crc_ok : 0.0f, caps_n ? dsp_us / 1000.0f / caps_n : 0.0f);
             burst_serial_send(buf, k);
@@ -3021,7 +3060,7 @@ bool board_ui_command(const char *line) {
                 burst_serial_send(buf, k2);
             }
         }
-        free(bits); free(pool); free(macs); free(sbuf); free(hits); free(pk);
+        free(bits); free(pool); free(macs); free(sbuf); free(hits); free(pk); free(dec);
         return true;
     }
     /* TDSCANCH c [ms]: scan channel c only (passive for ms if given) and
