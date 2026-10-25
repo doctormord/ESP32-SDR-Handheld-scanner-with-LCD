@@ -660,6 +660,21 @@ static void night_tint(uint16_t *s, int n) {
  * by strip as it is drawn (RGB565, high byte first, as sent to the panel). */
 static volatile bool shot_req;
 static bool shot_on;
+static int shot_div = 1;           /* 2: every 2x2 pixels averaged (GIFs, a quarter of the data) */
+UI_BSS static uint16_t shot_row[W / 2];
+static uint16_t shot_avg(uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
+    /* Pixels are stored byte-swapped (high byte first, as the panel wants). */
+    const uint16_t p[4] = {a, b, c, d};
+    unsigned r = 0, g = 0, bl = 0;
+    for (int i = 0; i < 4; i++) {
+        const uint16_t v = (uint16_t)(p[i] << 8 | p[i] >> 8);
+        r += v >> 11;
+        g += (v >> 5) & 63;
+        bl += v & 31;
+    }
+    const uint16_t v = (uint16_t)((r / 4) << 11 | (g / 4) << 5 | bl / 4);
+    return (uint16_t)(v << 8 | v >> 8);
+}
 static uint32_t shot_crc;
 static SemaphoreHandle_t shot_done;
 
@@ -670,9 +685,17 @@ static void render(strip_fn fn, int top, int bottom) {
         uint16_t *s = td_lcd_strip_at(y);
         fn(s, y, h);
         if (night) night_tint(s, W * h);
-        if (shot_on) {
+        if (shot_on && shot_div == 1) {
             shot_crc = esp_rom_crc32_le(shot_crc, (const uint8_t *)s, W * h * 2);
             burst_serial_send(s, W * h * 2);
+        } else if (shot_on) {
+            for (int r = 0; r + 1 < h; r += 2) {
+                const uint16_t *a = s + r * W, *b = a + W;
+                for (int x = 0; x < W / 2; x++)
+                    shot_row[x] = shot_avg(a[2 * x], a[2 * x + 1], b[2 * x], b[2 * x + 1]);
+                shot_crc = esp_rom_crc32_le(shot_crc, (const uint8_t *)shot_row, sizeof(shot_row));
+                burst_serial_send(shot_row, sizeof(shot_row));
+            }
         }
         td_lcd_blit(0, y, W, h, s);
     }
@@ -2600,7 +2623,9 @@ static void draw_frame(void) {
     vTaskPrioritySet(NULL, prio);
     if (shot_req) {
         char h[40];
-        const int n = snprintf(h, sizeof(h), "TDSCREEN %d %d\n", W, H);
+        /* Strips are 16 rows, so 2x2 blocks never straddle two; an odd last
+         * row (T-Display: 135) is left out. */
+        const int n = snprintf(h, sizeof(h), "TDSCREEN %d %d\n", W / shot_div, H / shot_div);
         burst_serial_send(h, n);
         shot_crc = 0;
         shot_on = true;
@@ -2986,7 +3011,8 @@ bool board_ui_command(const char *line) {
         burst_serial_send(buf, n);
         return true;
     }
-    if (!strcmp(line, "TDSCREEN")) { /* screenshot of the next frame, see render() */
+    if (!strncmp(line, "TDSCREEN", 8) && (!line[8] || line[8] == ' ')) { /* screenshot of the next frame, see render() */
+        shot_div = !strcmp(line + 8, " 2") ? 2 : 1;
         if (!shot_done) shot_done = xSemaphoreCreateBinary();
         xSemaphoreTake(shot_done, 0);
         shot_req = true;
