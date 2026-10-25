@@ -2951,9 +2951,11 @@ bool board_ui_command(const char *line) {
         extern unsigned scan_phase_us[4];
         extern unsigned td_lcd_flush_us __attribute__((weak)), td_lcd_blit_us __attribute__((weak));
         extern unsigned td_lcd_chunks_sent __attribute__((weak));
+        extern unsigned td_lcd_build_us __attribute__((weak)), td_lcd_hash_us __attribute__((weak));
         if (&td_lcd_flush_us) {
-            n = snprintf(buf, sizeof(buf), "lcd flush %u us blit-sum %u us chunks %u\n", td_lcd_flush_us, td_lcd_blit_us,
-                         &td_lcd_chunks_sent ? td_lcd_chunks_sent : 0);
+            n = snprintf(buf, sizeof(buf), "lcd flush %u us blit-sum %u us chunks %u build %u us hash %u us\n",
+                         td_lcd_flush_us, td_lcd_blit_us, &td_lcd_chunks_sent ? td_lcd_chunks_sent : 0,
+                         &td_lcd_build_us ? td_lcd_build_us : 0, &td_lcd_hash_us ? td_lcd_hash_us : 0);
             td_lcd_blit_us = 0;
             burst_serial_send(buf, n);
         }

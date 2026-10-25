@@ -5,8 +5,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- JC3248: draw natively in panel orientation to save the rotation in the
-  flush (~CPU part of the 25 ms send).
 - FOCUS on the T-Display could become the main "long ear" for BLE/Zigbee
   (no gapless detector there).
 - Optional fixed RSSI offset (phone-like readings) — owner prefers raw values
@@ -51,5 +49,9 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 - JC3248 TE pin (tear-free frames): no tearing seen (owner, 2026-10-25).
 - JC3248 vendor's full AXS15231B init sequence: colours look right (owner,
   2026-10-25).
+- JC3248 drawing in panel orientation to save the rotation in the flush:
+  the rotation costs 5–7 ms of ~25 ms per frame and is PSRAM-miss bound;
+  drawing natively would move it, not remove it (est. 2–3 ms saved);
+  HISTORY 2026-10-25.
 - BLE LIST SDR: low-pass filters ahead of the decoder and alternating gains
   (no measurable gain; the 15–20 dB gap to NimBLE is structural).

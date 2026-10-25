@@ -520,3 +520,18 @@ the fixed gain 50 of v1.3.0.
   for the numbered explanations. README: new section "On the device", a
   gallery of the real (pixelated) screenshots of nine pages (JC3248,
   236 KB).
+
+## 2026-10-25 — JC3248: what the rotation in the flush costs (branch `jc-flush`)
+
+- `TDSTAT?` now shows `build` (rotation into the bounce buffer) and `hash`
+  per flush. JC, 3 readings each: WATERFALL 26.3 frames/s, render 37 ms,
+  flush 25 ms of which build 6.4–7.0 ms and hash 1.4 ms (40 chunks; the
+  rest is the bus, ~15 ms for 307 KB at 40 MHz QSPI); NETWORKS 29.6,
+  render 19 ms, flush 9 ms, build 5.1–5.3, hash 1.3 (3–6 chunks); FOCUS
+  WIFI 23.7, render 41 ms, build 6.5–6.9.
+- Two pixels per 32-bit load in build_chunk: no change (6.3–6.9 ms):
+  the rotation is bound by PSRAM cache misses (a 12-row chunk uses 24 of
+  64 bytes of each cache line). Reverted. Larger chunks would need internal
+  RAM (1.4 KB free); drawing natively in panel orientation would move the
+  transpose into the strips, est. 2–3 ms saved per frame. Not done
+  (BACKLOG "Not doing").
