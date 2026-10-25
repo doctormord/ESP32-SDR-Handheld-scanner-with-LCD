@@ -5,8 +5,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- JC3248: vendor's full AXS15231B init sequence (gamma/timing) — compare
-  colours.
 - JC3248: draw natively in panel orientation to save the rotation in the
   flush (~CPU part of the 25 ms send).
 - FOCUS on the T-Display could become the main "long ear" for BLE/Zigbee
@@ -51,5 +49,7 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   on, a replug fixes it (README notes it). Quieter boot log and a FIFO
   flush did not help (HISTORY 2026-10-25); not worth more time.
 - JC3248 TE pin (tear-free frames): no tearing seen (owner, 2026-10-25).
+- JC3248 vendor's full AXS15231B init sequence: colours look right (owner,
+  2026-10-25).
 - BLE LIST SDR: low-pass filters ahead of the decoder and alternating gains
   (no measurable gain; the 15–20 dB gap to NimBLE is structural).
