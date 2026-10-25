@@ -132,6 +132,16 @@ The same pages on the T-Display (240×135):
 | <img src="images/device-tdisplay/focus.png" alt="FOCUS WIFI"> | <img src="images/device-tdisplay/ble-list-sdr.png" alt="BLE LIST SDR"> | |
 | FOCUS WIFI | BLE LIST SDR | |
 
+Live on the T-Display: WATERFALL FULL, FOCUS WIFI 6, FOCUS BLE 38 and FOCUS
+ZIGBEE 15. These are time-lapses: over its serial adapter the T-Display
+sends only one or two frames per second, and the GIFs play them at 10 per
+second.
+
+| | |
+|---|---|
+| <img src="images/device-tdisplay/live-waterfall.gif" alt="WATERFALL FULL recorded on the T-Display"> | <img src="images/device-tdisplay/live-focus-wifi.gif" alt="FOCUS WIFI on channel 6, recorded on the T-Display"> |
+| <img src="images/device-tdisplay/live-focus-ble.gif" alt="FOCUS BLE on channel 38, recorded on the T-Display"> | <img src="images/device-tdisplay/live-focus-zigbee.gif" alt="FOCUS ZIGBEE on channel 15, recorded on the T-Display"> |
+
 ---
 
 ## Survey mode: networks and channel load

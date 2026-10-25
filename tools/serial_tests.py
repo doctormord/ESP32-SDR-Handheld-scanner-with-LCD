@@ -16,6 +16,8 @@ script waits --boot seconds and drops the boot log before the first command.
     python tools/serial_tests.py PORT screen shot.png  # screenshot (needs Pillow)
     python tools/serial_tests.py PORT screen focus.png --cmd 'TDSNPAGE 4' --wait 10
     python tools/serial_tests.py PORT gif waterfall.gif --secs 20 --wait 10
+    python tools/serial_tests.py PORT --baud 1000000 gif ble.gif --secs 60 --fps 10 \
+        --colors 32 --cmd 'TDSNPAGE 4' --cmd 'TDFOCUS 14' --wait 10   # time-lapse
 
 PORT: JC3248 /dev/cu.usbmodem* or /dev/ttyACM* (USB serial/JTAG), T-Display
 /dev/cu.usbserial-* or /dev/ttyUSB* (CP2104, 2 Mbaud).
@@ -287,7 +289,9 @@ def save_gif(frames, durations, out, colors=256, dither=False):
 
 def do_gif(b, a):
     """Screenshots back to back as an animated GIF, each frame shown for the
-    time it really took (so it plays at the board's speed)."""
+    time it really took (so it plays at the board's speed), or with --fps at
+    a fixed rate: a time-lapse when the board sends fewer frames per second
+    (a full JC3248 frame takes about 0.4 s over USB)."""
     setup(b, a)
     frames, times = [], []
     end = time.time() + a.secs
@@ -300,6 +304,8 @@ def do_gif(b, a):
         sys.exit('too few frames')
     durations = [int((t1 - t0) * 1000) for t0, t1 in zip(times, times[1:])]
     durations.append(durations[-1])
+    if a.fps:
+        durations = [int(round(1000 / a.fps))] * len(frames)
     if a.scale != 1:
         frames = [f.resize((f.width * a.scale, f.height * a.scale)) for f in frames]
     if a.raw:  # the frames as PNGs plus their durations, to try palettes later
@@ -409,6 +415,7 @@ def main():
     p.add_argument('out')
     p.add_argument('--secs', type=float, default=15)
     p.add_argument('--scale', type=int, default=1)
+    p.add_argument('--fps', type=float, help='play back at this rate instead of the recorded one')
     p.add_argument('--half', action='store_true', help='half resolution from the board (faster)')
     p.add_argument('--colors', type=int, default=256, help='palette size (one palette for all frames)')
     p.add_argument('--dither', action='store_true')
