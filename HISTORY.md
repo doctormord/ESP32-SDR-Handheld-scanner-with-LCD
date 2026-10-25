@@ -397,3 +397,17 @@ this repository unless noted.
   (1.4 KB internal RAM free), which slows the side decoder. Same device
   count with more packets suggests the missing ones are too weak for the
   SDR path rather than too rare.
+- ESP-DSP low-pass on the page (owner's second round of point 1): the same
+  24-tap filter with `dsps_fird_s16` (aes3), I and Q unpacked in 1024-sample
+  blocks, switchable per command, list cleared before each run. JC, 60 s
+  runs interleaved: without 306/307 decoded captures/s, 0.063 valid packets
+  per capture, 9/8 devices; with 156/155 per s, 0.049 per capture, 6/11
+  devices. Half the captures and no better yield per capture (the plain C
+  filter had given +18 %; not followed up). Removed again.
+- Sensitivity, owner's reading the same afternoon: BLE LIST (NimBLE) 13
+  active / 16 total, strongest −50 dBm, weakest −100, 8 devices below
+  −80 dBm; BLE LIST SDR 6 / 6 with a laptop right beside the board at
+  +1 dBFS (clipping). The SDR path reaches roughly the devices above
+  −80 dBm; it is some 15–20 dB less sensitive than the BLE receiver on the
+  same radio (15 MHz wide, 10-bit capture shared with strong neighbours,
+  coarse filter, ~30 % duty).
