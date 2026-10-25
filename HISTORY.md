@@ -454,3 +454,24 @@ the fixed gain 50 of v1.3.0.
 - Neither closes the 15–20 dB gap to NimBLE. It comes from capturing
   15 MHz with 10 bits next to strong Wi-Fi, not from the decoder's filter
   or the gain.
+
+## 2026-10-25 — BLE LIST frame rate; TDSCREEN; USB after restart (branch `tdscreen`)
+
+- Owner: BLE LIST much slower than before. Cause: v1.3.0 throttled both BLE
+  lists to 5 frames/s for BLE LIST SDR's second decoder; in the BLE start
+  the main loop sits in 300 ms scans and hardly wakes the drawing task, so
+  it was 2–3 frames/s. Throttle now only on BLE LIST SDR. Measured (JC,
+  `drawn` over 8 s, BLE LIST): v1.2.0 17.0/17.0, fixed 16.7/16.8. (A first
+  comparison said 26 for v1.2.0: wrong page number, it measured the
+  survey; BLE LIST was page 6 there.) Then the drawing task paces itself
+  at 20 ms in the BLE start instead of waiting 40 ms for the main loop:
+  23.8/23.6 frames/s.
+- TDSCREEN: screenshot of the next frame as it is drawn (RGB565, CRC-32),
+  `tools/serial_tests.py PORT screen file.png [--cmd … --wait s]`. T-Display
+  240×135 and JC 480×320 (about 1–2 s) checked, CRC ok.
+- USB serial silent after a software restart (BACKLOG): reproduced on the
+  Mac. A restart (BLE LIST in) while the host does not read leaves the port
+  silent; the board runs on (BLE LIST updating). With the host reading
+  continuously it survives. Boot log cut to warnings (5.4 KB → 0.35 KB):
+  the first restart then survived, later ones did not. Not the cause;
+  change reverted. Open.

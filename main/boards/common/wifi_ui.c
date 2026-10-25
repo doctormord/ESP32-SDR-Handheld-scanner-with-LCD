@@ -84,9 +84,10 @@
 #endif
 #define ROW_US 40000          /* one waterfall row every 40 ms (25 rows/s) */
 #define DRAW_US 20000         /* display refresh: 50 frames/s */
-#define DRAW_LIST_US 200000   /* BLE lists: 5 frames/s; on the JC a frame costs
-                               * ~28 ms render + ~13 ms send on the drawing core,
-                               * which BLE LIST SDR's second decoder needs */
+#define DRAW_LIST_US 200000   /* BLE LIST SDR: 5 frames/s; on the JC a frame
+                               * costs ~28 ms render + ~13 ms send on the drawing
+                               * core, which its second decoder needs (BLE LIST
+                               * itself draws at the normal rate) */
 #define EASE 0.3f             /* displayed values move this share to the target per frame */
 #define DETECT_DB 6.0f        /* burst detection threshold above the floor */
 #define AIR_TAU_S 2.0f        /* airtime averaging */
@@ -2638,7 +2639,9 @@ static void draw_loop(void *arg) {
     for (;;) {
         /* Woken per frame by the main loop, or on its own when that is busy
          * (a network scan, a detector run). */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2 * draw_us / 1000));
+        /* In the BLE start the main loop sits in 300 ms scans: pace
+         * ourselves (17 -> ~25 frames/s on BLE LIST, JC). */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS((sdr_local_ble_boot() ? 1 : 2) * draw_us / 1000));
 #if DRAW_CORE
         /* Two cores and a frame in RAM: draw without the bus while the other
          * core measures; only sending the frame needs the lock. */
@@ -3566,7 +3569,7 @@ bool board_ui_step(bool host_active) {
         }
     }
     static unsigned steps;
-    draw_us = sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR) ? DRAW_LIST_US : DRAW_US;
+    draw_us = sniffer && sn_page == SN_PAGE_BSDR ? DRAW_LIST_US : DRAW_US;
     if (now - draw_at >= draw_us) {
         draw_at = now;
         if (draw_task) xTaskNotifyGive(draw_task);
