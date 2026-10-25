@@ -48,11 +48,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   the README instead of drawn mockups, and display checks without photos.
   JC3248: the PSRAM frame; T-Display: the frame buffer if present, else
   render the strips once more.
-- BLE LIST SDR: about 15–20 dB less sensitive than NimBLE (devices below
-  ~−80 dBm missing) and overloaded by a very strong device next to it.
-  Ideas: gain that steps down only while a near device clips; a cheaper
-  low-pass (the plain C 24-tap filter gave +18 % packets per capture but
-  cost 7.7 ms; the ESP-DSP one gave no gain, HISTORY 2026-10-25).
 
 ## Not doing (decided, see HISTORY.md)
 
@@ -61,3 +56,5 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 - PSRAM temperature re-tuning on the JC3248 (IDF refuses the Boya flash).
 - 120 MHz on the T-Display (no PSRAM; flash max 80 MHz).
 - "Live trace" line over the phosphor (owner: looks odd).
+- BLE LIST SDR: low-pass filters ahead of the decoder and alternating gains
+  (no measurable gain; the 15–20 dB gap to NimBLE is structural).

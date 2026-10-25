@@ -429,3 +429,28 @@ this repository unless noted.
 - JC3248 image flashed at 0x0 as users do: `VERSION?` revision 7dd69fd
   (clean), BLE LIST SDR with both decoders, FOCUS BLE 49.4 ms/s.
   T-Display image not flashed (board not connected; same code as tested).
+
+## 2026-10-25 — BLE LIST SDR sensitivity ideas: tried, dropped
+
+Tried on a local branch (`ble-sdr-sens`, not merged); the firmware keeps
+the fixed gain 50 of v1.3.0.
+
+- Low-pass ahead of the decoder. A 7-tap filter at 4 MS/s after a sum of 4
+  (whose nulls at 4 and 8 MHz cover the bands that fold onto the channel),
+  against the decoder's own boxcar and the 24-tap filter. JC, ch 38, 20 s
+  runs interleaved, valid packets per capture: boxcar 0.050 / 0.058 /
+  0.054, 7-tap 0.061 / 0.043 / 0.053, 24-tap 0.053. Runs of the same
+  setting differ by ±15 %, so no filter shows a measurable gain. The
+  "+18 %" of the first filter test (earlier entry) was within that spread.
+- Alternating gain per capture. TDBLESDR on ch 38, 30 s runs: fixed 50
+  510/508/524 valid packets, 50/62 530/590/516/529, 62 556/585, 50/70
+  533/550, 56/68 638/585; advertisers 5–9 without a clear trend. On the
+  page, 60 s runs with the list cleared: JC 56/68 896/963 valid packets and
+  9/9 devices, fixed 50 909/926 and 8/8; T-Display 56/68 582/479/772/545
+  and 9/8/9/10, fixed 50 471/902/899/607 and 5/8/7/10. One or two devices
+  more, but fixed 50 alone ranged from 5 to 10 devices; and 17 % fewer
+  valid packets on the T-Display (near devices clip at 68), 3 % fewer
+  decoded captures on the JC. No proven gain: dropped.
+- Neither closes the 15–20 dB gap to NimBLE. It comes from capturing
+  15 MHz with 10 bits next to strong Wi-Fi, not from the decoder's filter
+  or the gain.
