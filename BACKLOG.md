@@ -38,11 +38,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   ("add tx back", `main/targets/esp32s3/transmitter.h`, `main/common/tx_iq.h`)
   plays raw I/Q at 40/80 MS/s through the S3's modem DMA reader. Only over
   a cable with 30 dB or more attenuation, never into the air.
-- **Screenshot over serial** (`TDSCREEN`): send the frame as RGB565, idea
-  from ESPARGOS/esp-sdr PR #13 (`SCREEN?`, not merged). Real pictures for
-  the README instead of drawn mockups, and display checks without photos.
-  JC3248: the PSRAM frame; T-Display: the frame buffer if present, else
-  render the strips once more.
 
 ## Not doing (decided, see HISTORY.md)
 
