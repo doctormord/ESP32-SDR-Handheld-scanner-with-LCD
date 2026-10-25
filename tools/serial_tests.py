@@ -33,7 +33,7 @@ FOCUS_PAGES = {3: 'WIFI', 4: 'BLE', 5: 'ZIGBEE'}
 
 
 class Board:
-    def __init__(self, port, boot):
+    def __init__(self, port, boot, baud=2000000):
         s = serial.Serial()
         s.port, s.baudrate, s.timeout = port, 2000000, 0.1
         s.dtr = s.rts = False
@@ -45,6 +45,13 @@ class Board:
         s.write(b'\n')
         self.read(1.0)
         s.reset_input_buffer()
+        self.dropped = 0
+        if baud != s.baudrate:  # UART only (T-Display); the board forgets it on reset
+            if not self.line(f'BAUD {baud}', 'OK BAUD'):
+                sys.exit(f'board did not switch to {baud} baud')
+            s.baudrate = baud
+            time.sleep(0.1)
+            s.reset_input_buffer()
 
     def read(self, secs, until=None):
         """Lines arriving within secs (sooner once a line contains until).
@@ -180,7 +187,9 @@ def do_probe(b, a):
 
 
 def grab(b, half=False):
-    """One TDSCREEN frame as a PIL image, or None (half: 2x2 averaged)."""
+    """One TDSCREEN frame as a PIL image, or None (half: 2x2 averaged).
+    A frame that comes up short or fails its CRC is dropped (b.dropped):
+    the T-Display's CP2104 now and then loses a few bytes at 2 Mbaud."""
     import zlib
     import numpy as np
     from PIL import Image
@@ -194,18 +203,31 @@ def grab(b, half=False):
     if not m:
         return None
     w, h = int(m.group(1)), int(m.group(2))
-    data, end = bytearray(), time.time() + 10
-    while len(data) < w * h * 2 and time.time() < end:
-        data += s.read(w * h * 2 - len(data))
+    # Lost bytes would leave the read waiting for the rest: give up after
+    # 0.3 s without data. The END line then lands in data, so the CRC fails.
+    data, quiet = bytearray(), time.time() + 1
+    while len(data) < w * h * 2 and time.time() < quiet:
+        got = s.read(w * h * 2 - len(data))
+        if got:
+            data += got
+            quiet = time.time() + 0.3
     tail = s.readline().decode(errors='replace').strip()
-    if len(data) < w * h * 2:
+    if len(data) < w * h * 2 or not tail.endswith(f'{zlib.crc32(bytes(data)) & 0xffffffff:08x}'):
+        b.dropped += 1
         return None
-    if not tail.endswith(f'{zlib.crc32(bytes(data)) & 0xffffffff:08x}'):
-        print(f'warning: CRC mismatch ("{tail}")')
     v = np.frombuffer(bytes(data), dtype='>u2').reshape(h, w).astype(np.uint32)
     r, g, bl = v >> 11, (v >> 5) & 63, v & 31
     rgb = np.dstack([(r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2)]).astype(np.uint8)
     return Image.fromarray(rgb, 'RGB')
+
+
+def grab_one(b, tries=5):
+    """A screenshot, retried when a frame is dropped."""
+    for _ in range(tries):
+        img = grab(b)
+        if img is not None:
+            return img
+    return None
 
 
 def setup(b, a):
@@ -220,7 +242,7 @@ def do_screen(b, a):
     """TDSCREEN: header line, W*H RGB565 pixels high byte first, END line
     with the CRC-32 of the pixel bytes."""
     setup(b, a)
-    img = grab(b)
+    img = grab_one(b)
     if img is None:
         sys.exit('no screenshot')
     img.save(a.out)
@@ -287,7 +309,8 @@ def do_gif(b, a):
         with open(os.path.join(a.raw, 'durations.txt'), 'w') as fh:
             fh.write(' '.join(map(str, durations)))
     save_gif(frames, durations, a.out, a.colors, a.dither)
-    print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s')
+    print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s, '
+          f'{b.dropped} dropped')
 
 
 # README pages: file, commands, seconds to settle, boxes to black out
@@ -333,7 +356,7 @@ def do_readme(b, a):
         b.read(wait)
         if name == 'page-ble-list.png' and cap_n(a.board, a.port) == 8192:
             continue  # no Bluetooth stack on the T-Display
-        img = grab(b)
+        img = grab_one(b)
         if img is None:
             print(f'{name}: no screenshot')
             continue
@@ -351,6 +374,8 @@ def main():
     ap.add_argument('--boot', type=float, default=8, help='seconds to wait after opening the port (default 8)')
     ap.add_argument('--board', choices=['auto', 'jc3248', 'tdisplay'], default='auto',
                     help='for the capture length; auto: from the port name')
+    ap.add_argument('--baud', type=int, choices=[1000000, 2000000], default=2000000,
+                    help='T-Display only: switch the UART after connecting (default 2000000)')
     sub = ap.add_subparsers(dest='what', required=True)
     p = sub.add_parser('send', help='send commands; CMD@SECS waits SECS, a bare @SECS just listens')
     p.add_argument('cmds', nargs='+')
@@ -391,7 +416,7 @@ def main():
     p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
     p.add_argument('--wait', type=float, default=0, help='seconds to wait before recording')
     a = ap.parse_args()
-    b = Board(a.port, a.boot)
+    b = Board(a.port, a.boot, a.baud)
     try:
         globals()['do_' + a.what](b, a)
     finally:
