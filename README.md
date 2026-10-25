@@ -170,8 +170,9 @@ WATERFALL FULL, NETWORKS, CHANNELS WIFI, CHANNELS ZIGBEE and LEVEL WIFI SINGLE.
 
 <img src="images/live-waterfall.gif" width="60%" alt="WATERFALL FULL recorded on the JC3248">
 
-Recorded on a JC3248 with `TDSCREEN` (5 s, about 3 frames per second, the
-board itself draws about 24).
+Recorded on a JC3248 with `TDSCREEN`. This is a time-lapse: a full frame
+takes about 0.36 s over USB, so the recording has about 3 frames per second
+(the board itself draws about 24), and the GIF plays them at 10 per second.
 
 ### NETWORKS
 
@@ -356,7 +357,7 @@ level of one particular network, use LEVEL WIFI SINGLE.
 </p>
 
 FOCUS WIFI 6, FOCUS BLE 38 and FOCUS ZIGBEE 15, recorded on a JC3248 with
-`TDSCREEN`. While a frame goes out over USB the receiver waits, because the
+`TDSCREEN`, as time-lapses like the one above. While a frame goes out over USB the receiver waits, because the
 USB traffic would show as lines in the spectrum. So the listening time
 shown in these recordings is much lower than in normal use.
 

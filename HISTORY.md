@@ -565,3 +565,6 @@ the fixed gain 50 of v1.3.0.
 - README: four T-Display GIFs (WATERFALL FULL at 2 Mbaud, FOCUS WIFI 6 /
   BLE 38 / ZIGBEE 15 at 1 Mbaud), 50 frames each played at 10 frames/s;
   recorded at 1.4–2.5 frames/s.
+- JC3248 GIFs recorded again the same way: 22 s per page at 2.8 frames/s
+  (0 dropped over USB serial/JTAG), 50 frames played at 10 frames/s;
+  0.8–1.2 MB each (before: 13–14 frames at real speed, ~250 KB).
