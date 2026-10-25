@@ -2101,7 +2101,9 @@ static unsigned bs_decimate(const uint32_t *in, unsigned n, uint32_t *out) {
  * BLE LIST on the JC: 17 advertisers in 90 s either way (2026-10-25). */
 #define BS_GAIN 50
 #define BS_DWELL_US 1000000
-enum { BS_HITS = 256, BS_PKTS = 16, BS_POOL = 1024 };
+/* Sized for legacy advertising (PDU up to 37 bytes): after DETECTOR the
+ * T-Display has only ~5 KB byte-addressable heap left. */
+enum { BS_HITS = 256, BS_PKTS = 8, BS_POOL = 512, BS_LEN = 37, BS_BITS = 16 + 8 * BS_LEN + 24 };
 UI_BSS static sdr_local_ble_t bs[BL_MAX];
 static int bs_n;
 static unsigned bs_ch, bs_samples;  /* bs_ch 0-2: channel 37-39 */
@@ -2123,13 +2125,20 @@ static uint32_t *bs_copy;           /* bs_dec[1]'s input */
 static volatile bool bs_side_busy;
 static TaskHandle_t bs_side_task;
 
+/* Word-only arrays: on the ESP32 they may come from IRAM (~64 KB free there,
+ * 32-bit access only). */
+static void *bs_words(size_t bytes) {
+    void *p = heap_caps_malloc(bytes, MALLOC_CAP_32BIT);
+    return p ? p : malloc(bytes);
+}
 static bool bs_dec_init(bs_dec_t *d) {
-    uint8_t *bits = malloc(GF_MAXBITS);
-    int32_t *sbuf = malloc(GF_SBUF * sizeof(int32_t));
-    d->hits = malloc(BS_HITS * sizeof(uint32_t));
+    uint8_t *bits = malloc(BS_BITS);
+    int32_t *sbuf = bs_words(GF_SBUF * sizeof(int32_t));
+    d->hits = bs_words(BS_HITS * sizeof(uint32_t));
     d->pk = malloc(BS_PKTS * sizeof(gf_pkt_t));
     d->pool = malloc(BS_POOL);
-    d->gf = (gf_t){.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = 255, .chan = 37,
+    /* Longer PDUs (extended advertising) end after the header (GF_F_LEN). */
+    d->gf = (gf_t){.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = BS_LEN, .chan = 37,
                    .sync = 0x8E89BED6u, .bits = bits, .sbuf = sbuf};
     if (bits && sbuf && d->hits && d->pk && d->pool && gf_init(&d->gf)) return true;
     free(bits); free(sbuf); free(d->hits); free(d->pk); free(d->pool);

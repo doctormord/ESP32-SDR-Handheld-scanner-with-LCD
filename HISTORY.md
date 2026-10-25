@@ -411,3 +411,13 @@ this repository unless noted.
   −80 dBm; it is some 15–20 dB less sensitive than the BLE receiver on the
   same radio (15 MHz wide, 10-bit capture shared with strong neighbours,
   coarse filter, ~30 % duty).
+- T-Display: the 64 KB copy for the second decoder does not fit (no block
+  that large), so one decoder: 216 captures/s (22 % listened), ~14–15 valid
+  packets/s, 10–12 devices in 60 s. After DETECTOR only ~5 KB
+  byte-addressable heap was left and the page silently stayed at 0
+  captures (decoder buffers ~7 KB). Now sized for legacy advertising (PDU
+  ≤ 37 bytes: bit buffer 344 instead of 2112 bytes, 8 packets / 512-byte
+  pool) and the word-only arrays from MALLOC_CAP_32BIT (IRAM on the
+  ESP32): after DETECTOR 216 captures/s, 857 valid packets and 12 devices
+  in 60 s, 4 KB heap left. Other pages unchanged (survey 4.8 ms/s, FOCUS
+  BLE 23.6 ms/s).
