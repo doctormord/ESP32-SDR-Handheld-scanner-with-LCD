@@ -290,8 +290,10 @@ def do_gif(b, a):
     print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s')
 
 
-# README pages (JC3248, 480x320): file, commands, seconds to settle, boxes to
-# pixelate (x0, y0, x1, y1) where network names and addresses are shown.
+# README pages: file, commands, seconds to settle, boxes to pixelate
+# (x0, y0, x1, y1, in JC3248 pixels, 480x320; scaled to the T-Display's
+# 240x135, whose layout is the same at half size) where network names and
+# addresses are shown.
 README_PAGES = [
     ('page-waterfall.png', ['TDSNIFF 0', 'TDPAGE 0'], 15, []),
     ('page-networks.png', ['TDSNIFF 0', 'TDPAGE 1'], 15, [(28, 20, 284, 320)]),
@@ -323,12 +325,16 @@ def do_readme(b, a):
         for c in cmds:
             b.cmd(c, 1)
         b.read(wait)
+        if name == 'page-ble-list.png' and cap_n(a.board, a.port) == 8192:
+            continue  # no Bluetooth stack on the T-Display
         img = grab(b)
         if img is None:
             print(f'{name}: no screenshot')
             continue
+        k = img.width / 480
         for box in boxes:
-            pixelate(img, box)
+            x0, y0, x1, y1 = (int(round(v * k)) for v in box)
+            pixelate(img, (x0, y0, x1, min(y1, img.height)), block=max(4, int(8 * k)))
         img.save(os.path.join(a.dir, name))
         print(f'{name}: ok')
 
