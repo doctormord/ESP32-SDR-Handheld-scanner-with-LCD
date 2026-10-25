@@ -211,7 +211,9 @@ def grab(b, half=False):
 def setup(b, a):
     for c in a.cmd:  # opening the port may have reset the board: set it up here
         b.cmd(c, 1)
-    time.sleep(a.wait)
+    # Keep reading while waiting: a JC3248 restarted (BLE LIST in/out) while
+    # the host does not read leaves its USB port silent.
+    b.read(a.wait)
 
 
 def do_screen(b, a):
@@ -288,6 +290,49 @@ def do_gif(b, a):
     print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s')
 
 
+# README pages (JC3248, 480x320): file, commands, seconds to settle, boxes to
+# pixelate (x0, y0, x1, y1) where network names and addresses are shown.
+README_PAGES = [
+    ('page-waterfall.png', ['TDSNIFF 0', 'TDPAGE 0'], 15, []),
+    ('page-networks.png', ['TDSNIFF 0', 'TDPAGE 1'], 15, [(28, 20, 284, 320)]),
+    ('page-channels.png', ['TDSNIFF 0', 'TDPAGE 2'], 15, []),
+    ('page-zigbee.png', ['TDSNIFF 0', 'TDPAGE 3'], 15, []),
+    ('page-coverage.png', ['TDSNIFF 0', 'TDPAGE 4'], 25, [(0, 22, 480, 66)]),
+    ('page-detector.png', ['TDSNPAGE 1'], 25, []),
+    ('page-focus.png', ['TDSNPAGE 3', 'TDFOCUS 5'], 15, []),
+    ('page-ble-list-sdr.png', ['TDSNPAGE 6'], 40, [(108, 20, 446, 320)]),
+    ('page-ble-list.png', ['TDSNPAGE 7'], 40, [(108, 20, 446, 320)]),
+]
+
+
+def pixelate(img, box, block=8):
+    from PIL import Image
+    x0, y0, x1, y1 = box
+    part = img.crop(box)
+    small = part.resize((max(1, (x1 - x0) // block), max(1, (y1 - y0) // block)), Image.BILINEAR)
+    img.paste(small.resize(part.size, Image.NEAREST), box)
+
+
+def do_readme(b, a):
+    """Screenshots of the README pages with names and addresses pixelated,
+    for `tools/readme_images.py --shots DIR`. Check them before committing."""
+    os.makedirs(a.dir, exist_ok=True)
+    for name, cmds, wait, boxes in README_PAGES:
+        if a.only and name not in a.only:
+            continue
+        for c in cmds:
+            b.cmd(c, 1)
+        b.read(wait)
+        img = grab(b)
+        if img is None:
+            print(f'{name}: no screenshot')
+            continue
+        for box in boxes:
+            pixelate(img, box)
+        img.save(os.path.join(a.dir, name))
+        print(f'{name}: ok')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('port')
@@ -320,6 +365,9 @@ def main():
     p.add_argument('out')
     p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
     p.add_argument('--wait', type=float, default=0, help='seconds to wait before the screenshot')
+    p = sub.add_parser('readme', help='README page screenshots, names and addresses pixelated')
+    p.add_argument('dir')
+    p.add_argument('--only', nargs='*', help='only these files (page-networks.png ...)')
     p = sub.add_parser('gif', help='screenshots back to back as an animated GIF')
     p.add_argument('out')
     p.add_argument('--secs', type=float, default=15)
