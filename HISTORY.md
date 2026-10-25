@@ -362,3 +362,17 @@ this repository unless noted.
 - My estimate before measuring (a few % listening, a few packets per
   second) was too low: without the FFT the capture rate is five times
   higher than on FOCUS BLE.
+- Page BLE LIST SDR (sniffer page 7 of 8, before BLE LIST, both boards):
+  37/38/39 one second each, gain 50, 16 MS/s captures of 16380 samples,
+  decoded advertisers in BLE LIST's layout (name and manufacturer from the
+  advertising data, level in dBFS with its own bar scale). JC: 283
+  captures/s with the display running, ~11 valid packets/s (TDBLESDR on one
+  channel: ~10/s).
+- Correction: TDBLESDR's "advertisers" counted every valid packet's first
+  address, including SCAN_REQ (type 3), whose first address is the
+  scanner's. The "17 vs 17" next to BLE LIST was therefore not a fair
+  comparison. Counting advertisers only (types 0, 1, 2, 4, 6) as the page
+  does: BLE LIST SDR 10 total, BLE LIST (NimBLE, 100 % duty, active scan)
+  14 active / 17 total, same place, owner's reading. The list also fills
+  and updates more slowly: ~28 % of the time listened, and a packet must
+  fit into one 1 ms capture.

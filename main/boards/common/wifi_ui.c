@@ -1301,10 +1301,11 @@ static void error_strip(uint16_t *s, int y0, int h) {
 #define SN_METER_DB 40.0f      /* full scale of bars and history */
 #define SN_ADV_HIST P(136)
 
-enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_FO_WIFI, SN_PAGE_FO_BLE, SN_PAGE_FO_ZB, SN_PAGE_BLIST,
-       SN_PAGES };
+enum { SN_PAGE_FIND, SN_PAGE_DET, SN_PAGE_PEIL, SN_PAGE_FO_WIFI, SN_PAGE_FO_BLE, SN_PAGE_FO_ZB, SN_PAGE_BSDR,
+       SN_PAGE_BLIST, SN_PAGES };
 static const char *const sn_page_name[SN_PAGES] = {"FINDER WIDEBAND", "DETECTOR PEAKS", "BEARING STRONGEST",
-                                                   "FOCUS WIFI", "FOCUS BLE", "FOCUS ZIGBEE", "BLE LIST"};
+                                                   "FOCUS WIFI", "FOCUS BLE", "FOCUS ZIGBEE", "BLE LIST SDR",
+                                                   "BLE LIST"};
 static bool sn_focus_page(int p) { return p >= SN_PAGE_FO_WIFI && p <= SN_PAGE_FO_ZB; }
 static void focus_enter(void);
 enum { SN_IDLE, SN_LEARN, SN_VERIFY };
@@ -1949,11 +1950,15 @@ static int bl_rank(const sdr_local_ble_t *a, int64_t now) {
     return now - a->last_us < BL_STALE_US ? 1000 + (int)a->rssi_avg : -(int)((now - a->last_us) / 1000000);
 }
 
-/* Once per frame (the strip runs per band): copy and sort the scanner's list. */
+static int bs_list(sdr_local_ble_t *out, int max);
+/* Once per frame (the strip runs per band): copy and sort the scanner's list
+ * (BLE LIST SDR: the SDR decoder's list). */
 static void bl_prepare(void) {
+    const bool sdr = sn_page == SN_PAGE_BSDR;
+    if (sdr && bl_n < 0) bl_n = 0;
     if (bl_n < 0) return;
     const int64_t now = esp_timer_get_time();
-    const int n = sdr_local_ble_list(bl, BL_MAX);
+    const int n = sdr ? bs_list(bl, BL_MAX) : sdr_local_ble_list(bl, BL_MAX);
     int m = 0;
     for (int i = 0; i < n; i++) if (now - bl[i].last_us < BL_GONE_US) bl[m++] = bl[i];
     for (int i = 1; i < m; i++) {
@@ -1966,8 +1971,17 @@ static void bl_prepare(void) {
     bl_n = m;
 }
 
-/* As NETWORKS: strong green, weak orange. */
-static uint16_t bl_colour(int rssi) { return rssi_colour(rssi); }
+/* As NETWORKS: strong green, weak orange. BLE LIST SDR reads dBFS: near
+ * devices -10 to -20, weak ones -35 and below (measured at gain 50). */
+static uint16_t bl_colour(int rssi) {
+    if (sn_page != SN_PAGE_BSDR) return rssi_colour(rssi);
+    return rssi >= -20 ? C_GREEN : rssi >= -32 ? C_YELLOW : C_ORANGE;
+}
+/* Bar position: -100 .. -30 dBm, or -50 .. 0 dBFS on BLE LIST SDR. */
+static int bl_bar(int rssi, int w) {
+    const int x = sn_page == SN_PAGE_BSDR ? (rssi + 50) * w / 50 : (rssi + 100) * w / 70;
+    return x > w ? w : x;
+}
 
 static void bl_strip(uint16_t *s, int y0, int h) {
     sv_fill(s, W, h, C_BLACK);
@@ -1977,6 +1991,7 @@ static void bl_strip(uint16_t *s, int y0, int h) {
         int fresh = 0;
         for (int i = 0; i < bl_n; i++) fresh += now - bl[i].last_us < BL_STALE_US;
         if (bl_n < 0) snprintf(t, sizeof(t), bl_known ? "no BLE" : "starting BLE ...");
+        else if (sn_page == SN_PAGE_BSDR) snprintf(t, sizeof(t), "%d active, %d total", fresh, bl_n);
         else {
             /* Restarts of a stalled scan (ble_scan.c) show, so one can tell. */
             extern int ble_scan_restarts __attribute__((weak));
@@ -2003,12 +2018,11 @@ static void bl_strip(uint16_t *s, int y0, int h) {
         const int r = (int)(a->rssi_avg + (a->rssi_avg < 0 ? -0.5f : 0.5f));
         snprintf(t, sizeof(t), "%d", r);
         text(s, y0, h, P(20) - text_w(t, 1), y, t, stale ? C_DIM : bl_colour(r), 1);
-        /* Bar: -100 .. -30 dBm, the strongest packet as a tick. */
+        /* Bar with the strongest packet as a tick. */
         rect(s, y0, h, P(23), y + P(2), P(30), P(5), C_COL);
-        int bw = (r + 100) * P(30) / 70;
-        if (bw > P(30)) bw = P(30);
+        const int bw = bl_bar(r, P(30));
         if (bw > 0) rect(s, y0, h, P(23), y + P(2), bw, P(5), stale ? C_DIM : bl_colour(r));
-        int mx = (a->rssi_max + 100) * P(30) / 70;
+        int mx = bl_bar(a->rssi_max, P(30));
         if (mx > P(30) - 1) mx = P(30) - 1;
         if (mx > 0) rect(s, y0, h, P(23) + mx, y + P(1), 1, P(7), C_WHITE);
         /* Name, else manufacturer, else "?"; shortened to fit. */
@@ -2036,6 +2050,136 @@ static void bl_step(void) {
     bl_known = true;
     if (n < 0) {bl_n = -1; vTaskDelay(pdMS_TO_TICKS(100));}
     else if (bl_n < 0) bl_n = 0;
+}
+
+/* ---- sniffer page: BLE LIST SDR ---------------------------------------------- */
+/* BLE advertising decoded from the receiver's own samples (gfsk.h, from the
+ * ESPsoup firmware), without a Bluetooth stack: on the T-Display, which has
+ * no room for one, and on the JC3248 without BLE LIST's restart. One
+ * advertising channel at a time, BS_DWELL_US each, fixed gain (AGC changes
+ * the gain inside packets), 16 MS/s captures of ~1 ms. Gain 50 was best on
+ * both boards (60 and up clips near devices, 30-40 loses weak ones). Next to
+ * BLE LIST on the JC: 17 advertisers in 90 s either way (2026-10-25). */
+#define BS_GAIN 50
+#define BS_DWELL_US 1000000
+enum { BS_HITS = 256, BS_PKTS = 16, BS_POOL = 1024 };
+UI_BSS static sdr_local_ble_t bs[BL_MAX];
+static int bs_n;
+static unsigned bs_ch, bs_samples;  /* bs_ch 0-2: channel 37-39 */
+static int64_t bs_switch_at;
+static gf_t bs_gf;
+static uint32_t *bs_hits;
+static gf_pkt_t *bs_pk;
+static uint8_t *bs_pool;
+
+static bool bs_init(void) {
+    if (bs_hits) return true;
+    uint8_t *bits = malloc(GF_MAXBITS);
+    int32_t *sbuf = malloc(GF_SBUF * sizeof(int32_t));
+    uint32_t *hits = malloc(BS_HITS * sizeof(uint32_t));
+    gf_pkt_t *pk = malloc(BS_PKTS * sizeof(gf_pkt_t));
+    uint8_t *pool = malloc(BS_POOL);
+    bs_gf = (gf_t){.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = 255, .chan = 37,
+                   .sync = 0x8E89BED6u, .bits = bits, .sbuf = sbuf};
+    if (!(bits && sbuf && hits && pk && pool) || !gf_init(&bs_gf)) {
+        free(bits); free(sbuf); free(hits); free(pk); free(pool);
+        return false;
+    }
+    bs_samples = sdr_local_max_samples() < 16380 ? sdr_local_max_samples() : 16380;
+    bs_pk = pk;
+    bs_pool = pool;
+    bs_hits = hits;
+    return true;
+}
+
+/* One advertising PDU (header, AdvA, data; LSB-first bytes as received).
+ * Caller holds ui_lock. */
+static void bs_add(const uint8_t *p, unsigned n, int rssi10, int64_t now) {
+    const unsigned type = p[0] & 15, len = p[1];
+    /* ADV_IND, ADV_DIRECT_IND, ADV_NONCONN_IND, SCAN_RSP, ADV_SCAN_IND. SCAN_REQ
+     * and CONNECT_IND start with the sender's (scanner's) address, extended
+     * advertising often has no AdvA on the primary channel. */
+    if ((type != 0 && type != 1 && type != 2 && type != 4 && type != 6) || len < 6 || n < 2 + len) return;
+    uint8_t a[6];
+    for (int k = 0; k < 6; k++) a[k] = p[7 - k]; /* most significant byte first */
+    int i = 0;
+    while (i < bs_n && memcmp(bs[i].addr, a, 6)) i++;
+    const int r = (rssi10 + (rssi10 < 0 ? -5 : 5)) / 10;
+    sdr_local_ble_t *e = &bs[i];
+    if (i == bs_n) {
+        if (bs_n < BL_MAX) bs_n++;
+        else { /* full: replace the one heard longest ago */
+            i = 0;
+            for (int j = 1; j < bs_n; j++) if (bs[j].last_us < bs[i].last_us) i = j;
+            e = &bs[i];
+        }
+        memset(e, 0, sizeof(*e));
+        memcpy(e->addr, a, 6);
+        e->company = 0xffff;
+        e->rssi_avg = (float)r;
+        e->rssi_max = (int8_t)r;
+        e->first_us = now;
+    }
+    e->addr_type = (p[0] >> 6) & 1; /* TxAdd */
+    e->rssi = (int8_t)r;
+    e->rssi_avg += 0.3f * (r - e->rssi_avg);
+    if (r > e->rssi_max) e->rssi_max = (int8_t)r;
+    e->count++;
+    e->last_us = now;
+    /* Advertising data: local name (complete wins over shortened) and the
+     * first manufacturer id. */
+    for (unsigned o = 8; type != 1 && o + 1 < 2 + len;) {
+        const unsigned l = p[o], t = p[o + 1];
+        if (!l || o + 1 + l > 2 + len) break;
+        if ((t == 0x09 || (t == 0x08 && !e->name[0])) && l > 1) {
+            unsigned m = l - 1 < sizeof(e->name) - 1 ? l - 1 : sizeof(e->name) - 1;
+            for (unsigned k = 0; k < m; k++) {
+                const uint8_t c = p[o + 2 + k];
+                e->name[k] = c < 0x20 || c > 0x7e ? '?' : (char)c;
+            }
+            e->name[m] = 0;
+        }
+        if (t == 0xff && l >= 3 && e->company == 0xffff) e->company = (uint16_t)(p[o + 2] | p[o + 3] << 8);
+        o += 1 + l;
+    }
+}
+
+static int bs_list(sdr_local_ble_t *out, int max) {
+    lock_ui();
+    const int n = bs_n < max ? bs_n : max;
+    memcpy(out, bs, n * sizeof(*out));
+    unlock_ui();
+    return n;
+}
+
+static void bs_forget(void) {
+    lock_ui();
+    bs_n = 0;
+    unlock_ui();
+}
+
+/* One capture per step on the current channel, then decode it. */
+static void bs_step(void) {
+    if (!bs_init()) {vTaskDelay(pdMS_TO_TICKS(100)); return;}
+    static const unsigned mhz[3] = {2402, 2426, 2480};
+    int64_t now = esp_timer_get_time();
+    if (now >= bs_switch_at) {
+        bs_ch = (bs_ch + 1) % 3;
+        bs_switch_at = now + BS_DWELL_US;
+        bs_gf.chan = 37 + (int)bs_ch;
+    }
+    sdr_local_set_bandwidth(15);
+    sdr_local_set_gain(BS_GAIN);
+    sdr_local_tune(mhz[bs_ch]);
+    const uint32_t *iq = quiet_capture_div(bs_samples, 6);
+    if (!iq) return;
+    const unsigned np = gf_block(&bs_gf, iq, bs_samples, bs_hits, BS_HITS, bs_pk, BS_PKTS, bs_pool, BS_POOL);
+    now = esp_timer_get_time();
+    lock_ui();
+    caps++;
+    for (unsigned i = 0; i < np; i++)
+        if (bs_pk[i].flags & GF_F_CRC) bs_add(bs_pool + bs_pk[i].off, bs_pk[i].n, bs_pk[i].rssi10, now);
+    unlock_ui();
 }
 
 /* ---- sniffer pages: FOCUS WIFI / BLE / ZIGBEE -------------------------------- */
@@ -2314,7 +2458,7 @@ static void frame_view(void) {
 /* One waterfall row; DETECTOR writes its own rows (one per run) into wf.
  * Caller holds ui_lock. */
 static void push_row(int64_t now) {
-    if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_DET)) {}
+    if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR || sn_page == SN_PAGE_DET)) {}
     else if (sniffer && sn_focus_page(sn_page)) focus_push_row();
     else if (sniffer) sn_push_row(now);
     else if (page == PAGE_WF || page == PAGE_NETS || page == PAGE_CHAN) wf_push_row();
@@ -2342,7 +2486,7 @@ static void draw_frame(void) {
     frame_view();
     unlock_ui();
     vTaskPrioritySet(NULL, prio);
-    if (sniffer && sn_page == SN_PAGE_BLIST) {bl_prepare(); render(bl_strip, 0, H);}
+    if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR)) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
                         : sn_page == SN_PAGE_DET ? det_strip
                         : sn_focus_page(sn_page) ? focus_strip : sn_peil_strip, 0, H);
@@ -2494,6 +2638,8 @@ static void key_long(int i, int64_t now) {
         theme_next(now);
     } else if (sniffer && sn_page == SN_PAGE_BLIST) {
         sdr_local_ble_forget();
+    } else if (sniffer && sn_page == SN_PAGE_BSDR) {
+        bs_forget();
     } else if (sniffer && (sn_page == SN_PAGE_DET)) {
         det_zero_start(now);
     } else if (sniffer) {
@@ -2711,6 +2857,13 @@ bool board_ui_command(const char *line) {
         burst_serial_send(buf, n);
         return true;
     }
+    if (!strcmp(line, "TDBS?")) { /* BLE LIST SDR: decoder totals since start */
+        int n = snprintf(buf, sizeof(buf), "TDBS ch %u blocks %u hits %u packets %u crc_ok %u rejected %u devices %d\n",
+                         37 + bs_ch, (unsigned)bs_gf.blocks, (unsigned)bs_gf.hits, (unsigned)bs_gf.pkts,
+                         (unsigned)bs_gf.crc_ok, (unsigned)bs_gf.rejected, bs_n);
+        burst_serial_send(buf, n);
+        return true;
+    }
     if (sscanf(line, "TDSNPAGE %d", &p) == 1 && p >= 0 && p < SN_PAGES) {
         if (!sniffer) sn_enter(true);
         burst_serial_send("OK\n", 3);
@@ -2806,7 +2959,8 @@ bool board_ui_command(const char *line) {
         } else {
             gf_sign = bsign < 0 ? -1 : 1;
             static const unsigned ble_mhz[3] = {2402, 2426, 2480};
-            unsigned caps_n = 0, nmac = 0, shown = 0;
+            unsigned caps_n = 0, nmac = 0, shown = 0, mcnt[MACS] = {0};
+            int mbest[MACS];
             int64_t dsp_us = 0;
             int rssi_sum = 0;
             lock_lcd();
@@ -2824,11 +2978,16 @@ bool board_ui_command(const char *line) {
                 dsp_us += esp_timer_get_time() - t0;
                 for (unsigned i = 0; i < np; i++) {
                     if (!(pk[i].flags & GF_F_CRC) || pk[i].n < 8) continue;
+                    /* Advertisers only, as BLE LIST SDR (bs_add): SCAN_REQ and
+                     * CONNECT_IND carry the scanner's address first. */
+                    const unsigned ty = pool[pk[i].off] & 15;
+                    if (ty != 0 && ty != 1 && ty != 2 && ty != 4 && ty != 6) continue;
                     const uint8_t *a = pool + pk[i].off + 2; /* AdvA, LSB first */
                     rssi_sum += pk[i].rssi10;
                     unsigned m = 0;
                     while (m < nmac && memcmp(macs[m], a, 6)) m++;
-                    if (m == nmac && nmac < MACS) memcpy(macs[nmac++], a, 6);
+                    if (m == nmac && nmac < MACS) {memcpy(macs[nmac++], a, 6); mbest[m] = -2000;}
+                    if (m < nmac) {mcnt[m]++; if (pk[i].rssi10 > mbest[m]) mbest[m] = pk[i].rssi10;}
                     if (shown < 8) {
                         shown++;
                         const uint8_t *p = pool + pk[i].off;
@@ -2842,6 +3001,7 @@ bool board_ui_command(const char *line) {
                 vTaskDelay(1);
             }
             unlock_lcd();
+            gf_sign = 1;
             const int k = snprintf(buf, sizeof(buf),
                                    "TDBLESDR ch %d gain %d sign %d caps %u (%u samples, %.1f ms listened) hits %u packets %u "
                                    "crc_ok %u rejected %u advertisers %u rssi %.1f dBFS dsp %.2f ms/capture\n",
@@ -2849,6 +3009,12 @@ bool board_ui_command(const char *line) {
                                    (unsigned)g.pkts, (unsigned)g.crc_ok, (unsigned)g.rejected, nmac,
                                    g.crc_ok ? rssi_sum / 10.0f / g.crc_ok : 0.0f, caps_n ? dsp_us / 1000.0f / caps_n : 0.0f);
             burst_serial_send(buf, k);
+            for (unsigned m = 0; m < nmac; m++) {
+                const uint8_t *a = macs[m];
+                const int k2 = snprintf(buf, sizeof(buf), "TDBLESDR adv %02x%02x%02x%02x%02x%02x n %u best %.1f dBFS\n",
+                                        a[5], a[4], a[3], a[2], a[1], a[0], mcnt[m], mbest[m] / 10.0f);
+                burst_serial_send(buf, k2);
+            }
         }
         free(bits); free(pool); free(macs); free(sbuf); free(hits); free(pk);
         return true;
@@ -3228,6 +3394,7 @@ bool board_ui_step(bool host_active) {
     if (blist) bl_step();
     else if (sniffer && (sn_page == SN_PAGE_DET)) det_step(t0);
     else if (sniffer && sn_focus_page(sn_page)) focus_step();
+    else if (sniffer && sn_page == SN_PAGE_BSDR) bs_step();
     else if (sniffer) sn_dwell();
     else if (page == PAGE_ZB) zb_dwell();
     else if (cov_page) cov_step(t0);
