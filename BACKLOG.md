@@ -5,11 +5,6 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 
 ## Next
 
-- JC3248: USB serial silent after software restart at 120 MHz — find out
-  why (USB-Serial/JTAG re-enumeration? PSRAM timing on warm boot?). Board
-  keeps running; replug fixes it.
-- JC3248: use the panel's TE pin (GPIO38) to start frames in the blanking
-  interval (tear-free) — only if tearing is noticed.
 - JC3248: vendor's full AXS15231B init sequence (gamma/timing) — compare
   colours.
 - JC3248: draw natively in panel orientation to save the rotation in the
@@ -56,5 +51,10 @@ in [HISTORY.md](HISTORY.md) and delete it here.
 - PSRAM temperature re-tuning on the JC3248 (IDF refuses the Boya flash).
 - 120 MHz on the T-Display (no PSRAM; flash max 80 MHz).
 - "Live trace" line over the phosphor (owner: looks odd).
+- JC3248 USB serial silent after a software restart: only when the host
+  holds the port open without reading during the restart; the board runs
+  on, a replug fixes it (README notes it). Quieter boot log and a FIFO
+  flush did not help (HISTORY 2026-10-25); not worth more time.
+- JC3248 TE pin (tear-free frames): no tearing seen (owner, 2026-10-25).
 - BLE LIST SDR: low-pass filters ahead of the decoder and alternating gains
   (no measurable gain; the 15–20 dB gap to NimBLE is structural).

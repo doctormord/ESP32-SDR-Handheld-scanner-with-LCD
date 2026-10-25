@@ -475,3 +475,9 @@ the fixed gain 50 of v1.3.0.
   continuously it survives. Boot log cut to warnings (5.4 KB → 0.35 KB):
   the first restart then survived, later ones did not. Not the cause;
   change reverted. Open.
+- USB after restart, second try: pushing out a FIFO packet left without a
+  flush (`usb_serial_jtag_ll_txfifo_flush()` when the FIFO is not writable)
+  did not help either (3 cycles: first restart answered, then silent).
+  Owner: the board always comes back, so only a host holding the port open
+  without reading is affected. Dropped (BACKLOG "Not doing"), as is the TE
+  pin (no tearing seen).
