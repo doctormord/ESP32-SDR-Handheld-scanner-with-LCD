@@ -132,6 +132,16 @@ The same pages on the T-Display (240×135):
 | <img src="images/device-tdisplay/focus.png" alt="FOCUS WIFI"> | <img src="images/device-tdisplay/ble-list-sdr.png" alt="BLE LIST SDR"> | |
 | FOCUS WIFI | BLE LIST SDR | |
 
+Live on the T-Display: WATERFALL FULL, FOCUS WIFI 6, FOCUS BLE 38 and FOCUS
+ZIGBEE 15. These are time-lapses: over its serial adapter the T-Display
+sends only one or two frames per second, and the GIFs play them at 10 per
+second.
+
+| | |
+|---|---|
+| <img src="images/device-tdisplay/live-waterfall.gif" alt="WATERFALL FULL recorded on the T-Display"> | <img src="images/device-tdisplay/live-focus-wifi.gif" alt="FOCUS WIFI on channel 6, recorded on the T-Display"> |
+| <img src="images/device-tdisplay/live-focus-ble.gif" alt="FOCUS BLE on channel 38, recorded on the T-Display"> | <img src="images/device-tdisplay/live-focus-zigbee.gif" alt="FOCUS ZIGBEE on channel 15, recorded on the T-Display"> |
+
 ---
 
 ## Survey mode: networks and channel load
@@ -160,8 +170,9 @@ WATERFALL FULL, NETWORKS, CHANNELS WIFI, CHANNELS ZIGBEE and LEVEL WIFI SINGLE.
 
 <img src="images/live-waterfall.gif" width="60%" alt="WATERFALL FULL recorded on the JC3248">
 
-Recorded on a JC3248 with `TDSCREEN` (5 s, about 3 frames per second, the
-board itself draws about 24).
+Recorded on a JC3248 with `TDSCREEN`. This is a time-lapse: a full frame
+takes about 0.36 s over USB, so the recording has about 3 frames per second
+(the board itself draws about 24), and the GIF plays them at 10 per second.
 
 ### NETWORKS
 
@@ -346,7 +357,7 @@ level of one particular network, use LEVEL WIFI SINGLE.
 </p>
 
 FOCUS WIFI 6, FOCUS BLE 38 and FOCUS ZIGBEE 15, recorded on a JC3248 with
-`TDSCREEN`. While a frame goes out over USB the receiver waits, because the
+`TDSCREEN`, as time-lapses like the one above. While a frame goes out over USB the receiver waits, because the
 USB traffic would show as lines in the spectrum. So the listening time
 shown in these recordings is much lower than in normal use.
 

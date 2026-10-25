@@ -548,3 +548,23 @@ the fixed gain 50 of v1.3.0.
   RAM (1.4 KB free); drawing natively in panel orientation would move the
   transpose into the strips, est. 2–3 ms saved per frame. Not done
   (BACKLOG "Not doing").
+
+## 2026-10-25 — T-Display GIFs: lost bytes over the CP2104 (branch `gif-capture`)
+
+- T-Display screenshots (64,800 bytes) arrived 145–1150 bytes short about
+  every third frame at 2 Mbaud; the device's CRC in `TDSCREEN END` matched
+  what it meant to send. Upstream `CAP16 16380 0` bursts lose bytes too
+  (5 of 15 at 2 Mbaud, 1 of 15 at 1 Mbaud, display paused by the lease),
+  so it is the UART link to the Mac, not the screenshot code. Losses were
+  higher on FOCUS BLE/ZIGBEE at 2 Mbaud (33 and 46 of ~100 frames) than on
+  WATERFALL (12); at 1 Mbaud 0–6 of ~90. Cause not found.
+- `serial_tests.py`: frames that come up short or fail the CRC are dropped
+  (give up after 0.3 s of silence instead of 10 s), single screenshots
+  retry, `--baud 1000000` switches the UART with `BAUD`, `--fps` plays a
+  recording back at a fixed rate (time-lapse).
+- README: four T-Display GIFs (WATERFALL FULL at 2 Mbaud, FOCUS WIFI 6 /
+  BLE 38 / ZIGBEE 15 at 1 Mbaud), 50 frames each played at 10 frames/s;
+  recorded at 1.4–2.5 frames/s.
+- JC3248 GIFs recorded again the same way: 22 s per page at 2.8 frames/s
+  (0 dropped over USB serial/JTAG), 50 frames played at 10 frames/s;
+  0.8–1.2 MB each (before: 13–14 frames at real speed, ~250 KB).
