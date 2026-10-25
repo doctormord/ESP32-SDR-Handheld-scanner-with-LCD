@@ -12,7 +12,9 @@ User-facing documentation is [README.md](README.md); this file is for whoever
 - **Everything in the repository is English**: code, comments, UI text,
   commit messages, docs. (Conversation with the owner may be German.)
 - **No secrets** in any file or commit (tokens, passwords, Wi-Fi keys, MACs of
-  people's devices from test logs).
+  people's devices from test logs). Example data in mockups and docs is
+  invented (network names like Home-WiFi, addresses like aabbcc000001),
+  never copied from logs, screenshots or real devices.
 - **[HISTORY.md](HISTORY.md) is append-only**: after each session or
   milestone, add a dated entry at the end (what changed, what was measured,
   what was learned, what was rejected and why). Never rewrite old entries.

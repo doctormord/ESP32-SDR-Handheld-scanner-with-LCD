@@ -489,3 +489,17 @@ the fixed gain 50 of v1.3.0.
 - JC3248 image flashed at 0x0: `VERSION?` revision da797dc, BLE LIST
   24.5 frames/s, TDSCREEN works. T-Display image not flashed (board not
   connected; TDSCREEN tested there on the branch).
+
+## 2026-10-25 — Mockups anonymised, history rewritten
+
+- The drawn mockups (NETWORKS, LEVEL WIFI SINGLE, BLE LIST, BLE LIST SDR)
+  carried network names, device names and MAC addresses that looked like
+  real ones from a test log; they had been in `tools/readme_images.py`
+  since the first commit, and two were copied into the BLE LIST SDR mockup.
+  Owner: not acceptable. All of them are now made-up placeholders
+  (Home-WiFi, Thermometer 1, aabbcc0000NN, …), the history was rewritten
+  with git-filter-repo (the strings replaced in every commit, the four old
+  images removed from all commits) and pushed with force; the merged side
+  branches were deleted on GitHub.
+- Rule (CLAUDE.md): example data in mockups is invented, never taken from
+  logs or screenshots.
