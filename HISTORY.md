@@ -481,3 +481,11 @@ the fixed gain 50 of v1.3.0.
   Owner: the board always comes back, so only a host holding the port open
   without reading is affected. Dropped (BACKLOG "Not doing"), as is the TE
   pin (no tearing seen).
+
+## 2026-10-25 — Release v1.3.1
+
+- `tdscreen` fast-forwarded into `main` (`da797dc`); images from clean
+  build dirs with `v1.3.1` tagged locally first (both report `v1.3.1`).
+- JC3248 image flashed at 0x0: `VERSION?` revision da797dc, BLE LIST
+  24.5 frames/s, TDSCREEN works. T-Display image not flashed (board not
+  connected; TDSCREEN tested there on the branch).
