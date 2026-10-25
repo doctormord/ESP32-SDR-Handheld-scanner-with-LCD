@@ -108,7 +108,7 @@ speed test therefore does not overload the picture.
 ## On the device
 
 Screenshots from a JC3248, taken over the serial port with `TDSCREEN`.
-Network names and device addresses are pixelated. The numbered pictures in
+Network names and device addresses are blacked out. The numbered pictures in
 the sections below are drawings with example data, so that each part can be
 pointed at.
 
@@ -120,6 +120,17 @@ pointed at.
 | CHANNELS ZIGBEE | LEVEL WIFI SINGLE | DETECTOR PEAKS (not zeroed) |
 | <img src="images/device/focus.png" alt="FOCUS WIFI"> | <img src="images/device/ble-list-sdr.png" alt="BLE LIST SDR"> | <img src="images/device/ble-list.png" alt="BLE LIST"> |
 | FOCUS WIFI | BLE LIST SDR | BLE LIST |
+
+The same pages on the T-Display (240×135):
+
+| | | |
+|---|---|---|
+| <img src="images/device-tdisplay/waterfall.png" alt="WATERFALL FULL"> | <img src="images/device-tdisplay/networks.png" alt="NETWORKS"> | <img src="images/device-tdisplay/channels.png" alt="CHANNELS WIFI"> |
+| WATERFALL FULL | NETWORKS | CHANNELS WIFI |
+| <img src="images/device-tdisplay/zigbee.png" alt="CHANNELS ZIGBEE"> | <img src="images/device-tdisplay/coverage.png" alt="LEVEL WIFI SINGLE"> | <img src="images/device-tdisplay/detector.png" alt="DETECTOR PEAKS"> |
+| CHANNELS ZIGBEE | LEVEL WIFI SINGLE | DETECTOR PEAKS (not zeroed) |
+| <img src="images/device-tdisplay/focus.png" alt="FOCUS WIFI"> | <img src="images/device-tdisplay/ble-list-sdr.png" alt="BLE LIST SDR"> | |
+| FOCUS WIFI | BLE LIST SDR | |
 
 ---
 

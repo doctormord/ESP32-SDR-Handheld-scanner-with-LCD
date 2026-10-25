@@ -290,7 +290,7 @@ def do_gif(b, a):
     print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s')
 
 
-# README pages: file, commands, seconds to settle, boxes to pixelate
+# README pages: file, commands, seconds to settle, boxes to black out
 # (x0, y0, x1, y1, in JC3248 pixels, 480x320; scaled to the T-Display's
 # 240x135, whose layout is the same at half size) where network names and
 # addresses are shown.
@@ -307,16 +307,22 @@ README_PAGES = [
 ]
 
 
-def pixelate(img, box, block=8):
+def redact(img, box, line):
+    """Each text line inside box becomes the same flat grey bar over the full
+    width: nothing of the names or addresses is left, not even their
+    length."""
+    import numpy as np
     from PIL import Image
+    a = np.asarray(img).copy()
     x0, y0, x1, y1 = box
-    part = img.crop(box)
-    small = part.resize((max(1, (x1 - x0) // block), max(1, (y1 - y0) // block)), Image.BILINEAR)
-    img.paste(small.resize(part.size, Image.NEAREST), box)
+    a[y0:y1, x0:x1] = 0
+    for y in range(y0, y1, line):  # one bar per line, all the same colour
+        a[y + line // 5:min(y + line - line // 5, y1), x0:x1] = (48, 48, 56)
+    img.paste(Image.fromarray(a))
 
 
 def do_readme(b, a):
-    """Screenshots of the README pages with names and addresses pixelated,
+    """Screenshots of the README pages with names and addresses blacked out,
     for `tools/readme_images.py --shots DIR`. Check them before committing."""
     os.makedirs(a.dir, exist_ok=True)
     for name, cmds, wait, boxes in README_PAGES:
@@ -334,7 +340,7 @@ def do_readme(b, a):
         k = img.width / 480
         for box in boxes:
             x0, y0, x1, y1 = (int(round(v * k)) for v in box)
-            pixelate(img, (x0, y0, x1, min(y1, img.height)), block=max(4, int(8 * k)))
+            redact(img, (x0, y0, x1, min(y1, img.height)), int(round(20 * k)))
         img.save(os.path.join(a.dir, name))
         print(f'{name}: ok')
 
@@ -371,7 +377,7 @@ def main():
     p.add_argument('out')
     p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
     p.add_argument('--wait', type=float, default=0, help='seconds to wait before the screenshot')
-    p = sub.add_parser('readme', help='README page screenshots, names and addresses pixelated')
+    p = sub.add_parser('readme', help='README page screenshots, names and addresses blacked out')
     p.add_argument('dir')
     p.add_argument('--only', nargs='*', help='only these files (page-networks.png ...)')
     p = sub.add_parser('gif', help='screenshots back to back as an animated GIF')
