@@ -341,3 +341,24 @@ this repository unless noted.
   step is not given a forced gain. Regression check: captures/s and
   listening unchanged (survey 4.7 ms/s, FOCUS BLE 23.0), TDPROBE floor
   −58.5 to −59.1 over 2412–2472 MHz.
+
+## 2026-10-25 — BLE packets through the SDR (experiment, branch `ble-sdr`)
+
+- `main/boards/common/gfsk.h`: the GFSK/BLE packet catcher of the ESPsoup
+  firmware (pit711/espsoup-firmware 0a7a405, `demod_dsp.h`, GPL-3.0-or-later),
+  GFSK part only, unchanged except a Q sign switch. Our dump words have the
+  C5's layout (I bits 0–9, Q 10–19); the Q orientation is the same (sign −1:
+  2 hits, 0 packets).
+- `TDBLESDR ch s [gain [sign]]`: tuned to the middle of channel 37/38/39,
+  fixed gain, 16 MS/s with 16380-sample captures (1.02 ms), boxcar to
+  4 MS/s (4 samples per bit), display paused.
+- T-Display, 10 s each: 239 captures/s = 24.5 % of the time listened (no
+  FFT analysis), demodulation 1.8–1.9 ms per capture. Valid-CRC packets at
+  gain 50: ch 37 146, ch 38 155/156, ch 39 132; 15–19 different
+  advertisers. Gain on ch 38: 30 → 109, 40 → 144, 50 → 156, 60 → 117,
+  70 → 98 (near devices clip). Ch 39 works although 2480 MHz is a crystal
+  harmonic: it sits on DC and goes out with it. ESPsoup's C5 gets ~72/s at
+  ~90 % duty; per second listened that is similar (~63 vs ~80).
+- My estimate before measuring (a few % listening, a few packets per
+  second) was too low: without the FFT the capture rate is five times
+  higher than on FOCUS BLE.

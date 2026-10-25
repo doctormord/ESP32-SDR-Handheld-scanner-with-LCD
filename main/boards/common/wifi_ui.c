@@ -31,6 +31,7 @@
 #include "sdkconfig.h"
 #include "td_board.h"
 #include "aafont.h"
+#include "gfsk.h"
 #include "burst_serial.h"
 #include "esp_heap_caps.h"
 #include "esp_private/esp_gpio_reserve.h"
@@ -2783,6 +2784,73 @@ bool board_ui_command(const char *line) {
         }
         n += snprintf(buf + n, sizeof(buf) - n, "\n");
         burst_serial_send(buf, n);
+        return true;
+    }
+    /* TDBLESDR ch s [gain [sign]]: BLE advertising packets through the SDR
+     * (experiment, gfsk.h). Tuned to the middle of channel 37/38/39, fixed
+     * gain, 16 MS/s decimated to 4 MS/s (4 samples per bit); display paused.
+     * Counts sync hits, packets, valid CRCs and different advertisers. */
+    int bch, bsec, bgain = 50, bsign = 1;
+    if (sscanf(line, "TDBLESDR %d %d %d %d", &bch, &bsec, &bgain, &bsign) >= 2 && bch >= 37 && bch <= 39 &&
+        bsec > 0 && bsec <= 60 && !sdr_local_ble_boot()) {
+        const unsigned n = sdr_local_max_samples() < 16380 ? sdr_local_max_samples() : 16380;
+        enum { HITS = 256, PKTS = 16, POOL = 1024, MACS = 64 };
+        uint8_t *bits = malloc(GF_MAXBITS), *pool = malloc(POOL), (*macs)[6] = malloc(MACS * 6);
+        int32_t *sbuf = malloc(GF_SBUF * sizeof(int32_t));
+        uint32_t *hits = malloc(HITS * sizeof(uint32_t));
+        gf_pkt_t *pk = malloc(PKTS * sizeof(gf_pkt_t));
+        gf_t g = {.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = 255, .chan = bch,
+                  .sync = 0x8E89BED6u, .bits = bits, .sbuf = sbuf};
+        if (!(bits && pool && macs && sbuf && hits && pk) || !gf_init(&g)) {
+            burst_serial_send("TDBLESDR no memory\n", 19);
+        } else {
+            gf_sign = bsign < 0 ? -1 : 1;
+            static const unsigned ble_mhz[3] = {2402, 2426, 2480};
+            unsigned caps_n = 0, nmac = 0, shown = 0;
+            int64_t dsp_us = 0;
+            int rssi_sum = 0;
+            lock_lcd();
+            td_lcd_idle();
+            sdr_local_set_bandwidth(15);
+            sdr_local_set_gain(bgain);
+            sdr_local_tune(ble_mhz[bch - 37]);
+            const int64_t end = esp_timer_get_time() + (int64_t)bsec * 1000000;
+            while (esp_timer_get_time() < end) {
+                const uint32_t *iq = sdr_local_capture(n, 6);
+                if (!iq) break;
+                caps_n++;
+                const int64_t t0 = esp_timer_get_time();
+                const unsigned np = gf_block(&g, iq, n, hits, HITS, pk, PKTS, pool, POOL);
+                dsp_us += esp_timer_get_time() - t0;
+                for (unsigned i = 0; i < np; i++) {
+                    if (!(pk[i].flags & GF_F_CRC) || pk[i].n < 8) continue;
+                    const uint8_t *a = pool + pk[i].off + 2; /* AdvA, LSB first */
+                    rssi_sum += pk[i].rssi10;
+                    unsigned m = 0;
+                    while (m < nmac && memcmp(macs[m], a, 6)) m++;
+                    if (m == nmac && nmac < MACS) memcpy(macs[nmac++], a, 6);
+                    if (shown < 8) {
+                        shown++;
+                        const uint8_t *p = pool + pk[i].off;
+                        const int k = snprintf(buf, sizeof(buf),
+                                               "TDBLESDR pkt type %u len %u adva %02x%02x%02x%02x%02x%02x rssi %.1f dBFS cfo %d Hz dev %d Hz\n",
+                                               p[0] & 15, p[1], a[5], a[4], a[3], a[2], a[1], a[0], pk[i].rssi10 / 10.0f,
+                                               (int)pk[i].cfo_hz, (int)pk[i].dev_hz);
+                        burst_serial_send(buf, k);
+                    }
+                }
+                vTaskDelay(1);
+            }
+            unlock_lcd();
+            const int k = snprintf(buf, sizeof(buf),
+                                   "TDBLESDR ch %d gain %d sign %d caps %u (%u samples, %.1f ms listened) hits %u packets %u "
+                                   "crc_ok %u rejected %u advertisers %u rssi %.1f dBFS dsp %.2f ms/capture\n",
+                                   bch, bgain, (int)gf_sign, caps_n, n, caps_n * n / 16000.0f, (unsigned)g.hits,
+                                   (unsigned)g.pkts, (unsigned)g.crc_ok, (unsigned)g.rejected, nmac,
+                                   g.crc_ok ? rssi_sum / 10.0f / g.crc_ok : 0.0f, caps_n ? dsp_us / 1000.0f / caps_n : 0.0f);
+            burst_serial_send(buf, k);
+        }
+        free(bits); free(pool); free(macs); free(sbuf); free(hits); free(pk);
         return true;
     }
     /* TDSCANCH c [ms]: scan channel c only (passive for ms if given) and
