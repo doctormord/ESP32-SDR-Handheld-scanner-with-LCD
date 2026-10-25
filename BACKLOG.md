@@ -38,6 +38,21 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   in Germany phones indoors mostly use 800/1800 MHz (B20/B3 uplinks below
   1842 MHz); only B1 (1920–1980) and B7 (2500–2570) uplinks would be in
   reach.
+- **JC3248 as a test transmitter** for bench measurements of the T-Display
+  (known tone: filter flatness, sample rates, sensitivity). zxkmm/esp-sdr
+  ("add tx back", `main/targets/esp32s3/transmitter.h`, `main/common/tx_iq.h`)
+  plays raw I/Q at 40/80 MS/s through the S3's modem DMA reader. Only over
+  a cable with 30 dB or more attenuation, never into the air.
+- **Screenshot over serial** (`TDSCREEN`): send the frame as RGB565, idea
+  from ESPARGOS/esp-sdr PR #13 (`SCREEN?`, not merged). Real pictures for
+  the README instead of drawn mockups, and display checks without photos.
+  JC3248: the PSRAM frame; T-Display: the frame buffer if present, else
+  render the strips once more.
+- **BLE packets through the SDR** (GFSK demodulator of pit711/espsoup-firmware,
+  `main/families/c5_c6_c61/demod_dsp.h`, GPL-3.0-or-later, integer only):
+  BLE devices on the T-Display, and on the JC without the restart of BLE
+  LIST. Needs fixed gain (their AGC test: 76 → 14 valid packets/s) and our
+  dump word layout. First measure valid packets per second on FOCUS BLE.
 
 ## Not doing (decided, see HISTORY.md)
 

@@ -110,7 +110,9 @@ static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *ca
         reply("ERR args\n");
         return false;
     }
-    if (rx_recalibration_stale()) prepare_rx();
+    /* PBUS work-mode setup in prepare_rx() releases a forced RX gain
+     * (upstream e342444); apply it again. Not seen in our own paths. */
+    if (rx_recalibration_stale()) {prepare_rx(); apply_gain();}
     REG_WRITE(DUMP_CTRL, 0);
     /* Host captures guard the whole aperture; the board UI's frequent short
      * ones only the requested words plus a margin (a full 64 KiB fill and
@@ -357,7 +359,7 @@ bool sdr_local_envelope(unsigned ms, unsigned divider, unsigned narrow, float *o
 #else
     const bool dual = false;
 #endif
-    if (rx_recalibration_stale()) prepare_rx();
+    if (rx_recalibration_stale()) {prepare_rx(); apply_gain();} /* see acquire_iq() */
     filter_apply();
     const uint32_t owner = DPORT_REG_READ(DPORT_IRAM_DRAM_AHB_SEL_REG);
     const uint32_t byte_select = REG_READ(DUMP_BYTES);

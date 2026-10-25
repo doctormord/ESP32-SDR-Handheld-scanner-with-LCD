@@ -310,3 +310,34 @@ this repository unless noted.
   phosphor lock, waterfall mixing) moved to CLAUDE.md "Hard-won facts".
 - CLAUDE.md: new section "Writing style" with the rules for README,
   release notes and docs.
+
+## 2026-10-25 — Other esp-sdr forks checked; ESP32 gain after recalibration
+
+- Looked at the code (not only the READMEs) of four repos, fork-only
+  commits against ESPARGOS/esp-sdr:
+  - pit711/espsoup-firmware: C5-only extensions (PARLIO gap-free capture,
+    5.9 GHz, FM video). Its GFSK/BLE demodulator (`demod_dsp.h`) is portable
+    integer code, GPL-3.0-or-later → BACKLOG experiment.
+  - NeoCat/esp-sdr-TDongleC5-LCD: a simple LCD waterfall for a C5 dongle;
+    nothing new for us.
+  - zxkmm/esp-sdr: raw I/Q transmit on the S3 ("add tx back") → BACKLOG
+    (JC as a bench test transmitter, over a cable only).
+  - Raptor-zip/esp-sdr-robotics-wifi: a measurement study (robot control
+    latency vs. Wi-Fi channel: p99 +23 ms same channel 6, +9 ms adjacent 7,
+    +1 ms on 11); 28 lines of C5 firmware changes.
+- ESPARGOS/esp-sdr, all branches and PRs up to today: our base is the state
+  of 2026-10-08 (DC/IQ calibration fixes included). Later main commits are
+  refactoring, formatting and host streaming. Side branches carry nothing
+  newer for ESP32/S3. PR #13 (not merged) has a `SCREEN?` screenshot
+  command → BACKLOG.
+- Upstream e342444 "ESP32: keep a manual RX gain when retuning": PBUS
+  work-mode setup in `prepare_rx()` releases a forced gain. In our code
+  only the stale-calibration path before a capture or a detector run was
+  exposed. Measured with a temporary counter on the T-Display: 0 hits in
+  about 3 minutes over scans, periodic scanning, LEVEL in/out, FOCUS
+  channel changes, CHANNELS ZIGBEE and DETECTOR (our scan and tune paths
+  re-apply the gain themselves). Fixed anyway at those two call sites, not
+  inside `prepare_rx()` as upstream did, so the Wi-Fi scan's calibration
+  step is not given a forced gain. Regression check: captures/s and
+  listening unchanged (survey 4.7 ms/s, FOCUS BLE 23.0), TDPROBE floor
+  −58.5 to −59.1 over 2412–2472 MHz.
