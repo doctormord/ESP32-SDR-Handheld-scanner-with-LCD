@@ -386,3 +386,14 @@ this repository unless noted.
   channel. So listening time, not sensitivity, is what BLE LIST SDR lacks.
   The low-pass stays as a TDBLESDR option; an ESP-DSP FIR might make it
   cheap enough later.
+- Two decoders (owner's point 1): a second decoder task on the drawing core
+  (lowest priority) decodes a copy while the main loop takes the next
+  capture; when it is busy the main loop decodes itself. On the JC it first
+  got 16 of ~26000 captures in 90 s: the drawing core was full (BLE list
+  frame: ~28 ms render + ~13 ms send, >30 frames/s). Both BLE lists now draw
+  at 5 frames/s (DRAW_LIST_US). Then, 90 s on BLE LIST SDR: side decoder 45 %
+  of the captures, 335 captures/s (was 283, +18 %), 1101 valid packets
+  (was 993, +11 %), still 10 devices. The copy sits in PSRAM on the JC
+  (1.4 KB internal RAM free), which slows the side decoder. Same device
+  count with more packets suggests the missing ones are too weak for the
+  SDR path rather than too rare.

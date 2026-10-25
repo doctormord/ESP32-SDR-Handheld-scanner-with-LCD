@@ -83,6 +83,9 @@
 #endif
 #define ROW_US 40000          /* one waterfall row every 40 ms (25 rows/s) */
 #define DRAW_US 20000         /* display refresh: 50 frames/s */
+#define DRAW_LIST_US 200000   /* BLE lists: 5 frames/s; on the JC a frame costs
+                               * ~28 ms render + ~13 ms send on the drawing core,
+                               * which BLE LIST SDR's second decoder needs */
 #define EASE 0.3f             /* displayed values move this share to the target per frame */
 #define DETECT_DB 6.0f        /* burst detection threshold above the floor */
 #define AIR_TAU_S 2.0f        /* airtime averaging */
@@ -2103,28 +2106,76 @@ UI_BSS static sdr_local_ble_t bs[BL_MAX];
 static int bs_n;
 static unsigned bs_ch, bs_samples;  /* bs_ch 0-2: channel 37-39 */
 static int64_t bs_switch_at;
-static gf_t bs_gf;
-static uint32_t *bs_hits;
-static gf_pkt_t *bs_pk;
-static uint8_t *bs_pool;
+/* A decoder's state and scratch. The main loop decodes with bs_dec[0]; a
+ * task on the other core decodes copies with bs_dec[1] while the main loop
+ * takes the next capture (it runs at the lowest priority, so it only uses
+ * the time the display leaves). Decoding (1.6-1.9 ms) takes longer than a
+ * capture (~1.4 ms): one decoder alone listens ~28 % of the time. */
+typedef struct {
+    gf_t gf;
+    uint32_t *hits;
+    gf_pkt_t *pk;
+    uint8_t *pool;
+    unsigned caps;
+} bs_dec_t;
+static bs_dec_t bs_dec[2];
+static uint32_t *bs_copy;           /* bs_dec[1]'s input */
+static volatile bool bs_side_busy;
+static TaskHandle_t bs_side_task;
 
-static bool bs_init(void) {
-    if (bs_hits) return true;
+static bool bs_dec_init(bs_dec_t *d) {
     uint8_t *bits = malloc(GF_MAXBITS);
     int32_t *sbuf = malloc(GF_SBUF * sizeof(int32_t));
-    uint32_t *hits = malloc(BS_HITS * sizeof(uint32_t));
-    gf_pkt_t *pk = malloc(BS_PKTS * sizeof(gf_pkt_t));
-    uint8_t *pool = malloc(BS_POOL);
-    bs_gf = (gf_t){.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = 255, .chan = 37,
+    d->hits = malloc(BS_HITS * sizeof(uint32_t));
+    d->pk = malloc(BS_PKTS * sizeof(gf_pkt_t));
+    d->pool = malloc(BS_POOL);
+    d->gf = (gf_t){.fin = 16000000, .R = 4, .sps = 4, .mode = 0, .maxerr = 1, .len = 255, .chan = 37,
                    .sync = 0x8E89BED6u, .bits = bits, .sbuf = sbuf};
-    if (!(bits && sbuf && hits && pk && pool) || !gf_init(&bs_gf)) {
-        free(bits); free(sbuf); free(hits); free(pk); free(pool);
-        return false;
+    if (bits && sbuf && d->hits && d->pk && d->pool && gf_init(&d->gf)) return true;
+    free(bits); free(sbuf); free(d->hits); free(d->pk); free(d->pool);
+    d->hits = NULL;
+    return false;
+}
+
+static void bs_add(const uint8_t *p, unsigned n, int rssi10, int64_t now);
+/* Decode one capture and enter its advertisers. */
+static void bs_decode(bs_dec_t *d, const uint32_t *iq) {
+    const unsigned np = gf_block(&d->gf, iq, bs_samples, d->hits, BS_HITS, d->pk, BS_PKTS, d->pool, BS_POOL);
+    const int64_t now = esp_timer_get_time();
+    lock_ui();
+    d->caps++;
+    for (unsigned i = 0; i < np; i++)
+        if (d->pk[i].flags & GF_F_CRC) bs_add(d->pool + d->pk[i].off, d->pk[i].n, d->pk[i].rssi10, now);
+    unlock_ui();
+}
+
+static void bs_side_loop(void *arg) {
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        bs_decode(&bs_dec[1], bs_copy);
+        bs_side_busy = false;
     }
+}
+
+static bool bs_init(void) {
+    if (bs_dec[0].hits) return true;
+    if (!bs_dec_init(&bs_dec[0])) return false;
     bs_samples = sdr_local_max_samples() < 16380 ? sdr_local_max_samples() : 16380;
-    bs_pk = pk;
-    bs_pool = pool;
-    bs_hits = hits;
+#if CONFIG_FREERTOS_NUMBER_OF_CORES > 1
+    /* Without room for the copy, the main loop decodes alone. */
+    bs_copy = malloc(bs_samples * sizeof(uint32_t));
+#ifdef UI_TASK_CAPS
+#define BS_TASK(fn, h) xTaskCreatePinnedToCoreWithCaps(fn, "ble_sdr", 4096, NULL, 1, h, 1, UI_TASK_CAPS)
+#else
+#define BS_TASK(fn, h) xTaskCreatePinnedToCore(fn, "ble_sdr", 4096, NULL, 1, h, 1)
+#endif
+    if (!(bs_copy && bs_dec_init(&bs_dec[1]) && BS_TASK(bs_side_loop, &bs_side_task) == pdPASS)) {
+        free(bs_copy);
+        bs_copy = NULL;
+        bs_side_task = NULL;
+    }
+#endif
     return true;
 }
 
@@ -2194,28 +2245,31 @@ static void bs_forget(void) {
     unlock_ui();
 }
 
-/* One capture per step on the current channel, then decode it. */
+/* One capture per step on the current channel; the side task decodes it
+ * if it is free, else the main loop does. */
 static void bs_step(void) {
     if (!bs_init()) {vTaskDelay(pdMS_TO_TICKS(100)); return;}
     static const unsigned mhz[3] = {2402, 2426, 2480};
-    int64_t now = esp_timer_get_time();
+    const int64_t now = esp_timer_get_time();
     if (now >= bs_switch_at) {
         bs_ch = (bs_ch + 1) % 3;
         bs_switch_at = now + BS_DWELL_US;
-        bs_gf.chan = 37 + (int)bs_ch;
     }
     sdr_local_set_bandwidth(15);
     sdr_local_set_gain(BS_GAIN);
     sdr_local_tune(mhz[bs_ch]);
     const uint32_t *iq = quiet_capture_div(bs_samples, 6);
     if (!iq) return;
-    const unsigned np = gf_block(&bs_gf, iq, bs_samples, bs_hits, BS_HITS, bs_pk, BS_PKTS, bs_pool, BS_POOL);
-    now = esp_timer_get_time();
-    lock_ui();
     caps++;
-    for (unsigned i = 0; i < np; i++)
-        if (bs_pk[i].flags & GF_F_CRC) bs_add(bs_pool + bs_pk[i].off, bs_pk[i].n, bs_pk[i].rssi10, now);
-    unlock_ui();
+    if (bs_side_task && !bs_side_busy) {
+        memcpy(bs_copy, iq, bs_samples * sizeof(uint32_t));
+        bs_dec[1].gf.chan = 37 + (int)bs_ch;
+        bs_side_busy = true;
+        xTaskNotifyGive(bs_side_task);
+    } else {
+        bs_dec[0].gf.chan = 37 + (int)bs_ch;
+        bs_decode(&bs_dec[0], iq);
+    }
 }
 
 /* ---- sniffer pages: FOCUS WIFI / BLE / ZIGBEE -------------------------------- */
@@ -2543,12 +2597,13 @@ static void draw_frame(void) {
 #else
 #define DRAW_CORE 0
 #endif
+static volatile unsigned draw_us = DRAW_US;
 static void draw_loop(void *arg) {
     (void)arg;
     for (;;) {
         /* Woken per frame by the main loop, or on its own when that is busy
          * (a network scan, a detector run). */
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2 * DRAW_US / 1000));
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2 * draw_us / 1000));
 #if DRAW_CORE
         /* Two cores and a frame in RAM: draw without the bus while the other
          * core measures; only sending the frame needs the lock. */
@@ -2894,9 +2949,10 @@ bool board_ui_command(const char *line) {
         return true;
     }
     if (!strcmp(line, "TDBS?")) { /* BLE LIST SDR: decoder totals since start */
-        int n = snprintf(buf, sizeof(buf), "TDBS ch %u blocks %u hits %u packets %u crc_ok %u rejected %u devices %d\n",
-                         37 + bs_ch, (unsigned)bs_gf.blocks, (unsigned)bs_gf.hits, (unsigned)bs_gf.pkts,
-                         (unsigned)bs_gf.crc_ok, (unsigned)bs_gf.rejected, bs_n);
+        const gf_t *g0 = &bs_dec[0].gf, *g1 = &bs_dec[1].gf;
+        int n = snprintf(buf, sizeof(buf), "TDBS ch %u main %u side %u packets %u crc_ok %u devices %d copy %d\n",
+                         37 + bs_ch, bs_dec[0].caps, bs_dec[1].caps, (unsigned)(g0->pkts + g1->pkts),
+                         (unsigned)(g0->crc_ok + g1->crc_ok), bs_n, bs_copy != NULL);
         burst_serial_send(buf, n);
         return true;
     }
@@ -3464,7 +3520,8 @@ bool board_ui_step(bool host_active) {
         }
     }
     static unsigned steps;
-    if (now - draw_at >= DRAW_US) {
+    draw_us = sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR) ? DRAW_LIST_US : DRAW_US;
+    if (now - draw_at >= draw_us) {
         draw_at = now;
         if (draw_task) xTaskNotifyGive(draw_task);
         else {lock_lcd(); draw_frame(); unlock_lcd();} /* no task: draw here */
