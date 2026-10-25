@@ -353,8 +353,10 @@ Compared with BLE LIST, measured on the JC3248 at the same place:
   ones. The SDR path is roughly 15 to 20 dB less sensitive than the
   Bluetooth receiver, although both use the same radio.
 - It fills and updates more slowly. The receiver listens about 30 % of the
-  time (335 recordings per second, two decoders on two cores), while the
-  Bluetooth stack listens all the time.
+  time on the JC3248 (335 recordings per second, two decoders on two cores)
+  and about 22 % on the T-Display (216 per second, one decoder: there is no
+  room for the second one's buffer). The Bluetooth stack listens all the
+  time.
 - A very strong device right next to the board (more than about −5 dBFS)
   overloads the receiver and hides weaker ones.
 
