@@ -34,6 +34,24 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   ("add tx back", `main/targets/esp32s3/transmitter.h`, `main/common/tx_iq.h`)
   plays raw I/Q at 40/80 MS/s through the S3's modem DMA reader. Only over
   a cable with 30 dB or more attenuation, never into the air.
+- **I/Q over USB to PC SDR software while the display runs.** Upstream
+  ESP-SDR has no screen; it sends I/Q to the PC (browser viewer, and on the
+  S3 the gapless `IQS` stream, 15.6–250 kS/s decimated, for SDR++/gqrx via
+  esp-sdr-bridge). Our build still has the full upstream protocol (`INFO`,
+  `CAP16`, `SPEC`, `IQS` on the S3), but only either-or: a host command takes
+  a 5 s lease and the display pauses (`app_main` in
+  `main/targets/esp32s3/receiver.c`). Questions before any work:
+  - JC3248: can `IQS` run on core 1 next to the UI? Core 1 also draws and
+    runs the second BLE LIST SDR decoder. The tuner can only sit on one
+    frequency, so the display would have to follow the host's frequency
+    (e.g. a "PC" page with waterfall at the streamed frequency) instead of
+    scanning.
+  - USB traffic shows up as comb spurs on the JC (seen with `TDSCREEN`);
+    a continuous stream may spoil the waterfall it runs next to.
+  - T-Display: no native USB, only the CP2104 at 2 Mbaud (~200 kB/s) and
+    no gapless ring on the ESP32, so bursts only, like upstream.
+  - Check that upstream's viewer and esp-sdr-bridge still work against our
+    build at all (protocol version, `TD` commands in between).
 
 ## Not doing (decided, see HISTORY.md)
 
