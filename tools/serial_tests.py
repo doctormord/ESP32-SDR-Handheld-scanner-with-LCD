@@ -13,6 +13,8 @@ script waits --boot seconds and drops the boot log before the first command.
     python tools/serial_tests.py PORT spinoise 100   # TDSPINOISE, survey mode
     python tools/serial_tests.py PORT span 1 2437 38 20
     python tools/serial_tests.py PORT probe 3300 3900 20
+    python tools/serial_tests.py PORT screen shot.png  # screenshot (needs Pillow)
+    python tools/serial_tests.py PORT screen focus.png --cmd 'TDSNPAGE 4' --wait 10
 
 PORT: JC3248 /dev/cu.usbmodem* or /dev/ttyACM* (USB serial/JTAG), T-Display
 /dev/cu.usbserial-* or /dev/ttyUSB* (CP2104, 2 Mbaud).
@@ -175,6 +177,43 @@ def do_probe(b, a):
             print(ln)
 
 
+def do_screen(b, a):
+    """TDSCREEN: header line, W*H RGB565 pixels high byte first, END line
+    with the CRC-32 of the pixel bytes."""
+    import zlib
+    from PIL import Image
+    s = b.s
+    for c in a.cmd:  # opening the port may have reset the board: set it up here
+        b.cmd(c, 1)
+    time.sleep(a.wait)
+    s.reset_input_buffer()
+    s.write(b'TDSCREEN\n')
+    end, line = time.time() + 5, b''
+    while time.time() < end and not line.startswith(b'TDSCREEN '):
+        line = s.readline().replace(b'\0', b'')
+    m = re.match(rb'TDSCREEN (\d+) (\d+)', line)
+    if not m:
+        sys.exit(f'no screenshot ({line!r})')
+    w, h = int(m.group(1)), int(m.group(2))
+    data, end = bytearray(), time.time() + 10
+    while len(data) < w * h * 2 and time.time() < end:
+        data += s.read(w * h * 2 - len(data))
+    tail = s.readline().decode(errors='replace').strip()
+    if len(data) < w * h * 2:
+        sys.exit(f'short: {len(data)} of {w * h * 2} bytes')
+    crc = f'{zlib.crc32(bytes(data)) & 0xffffffff:08x}'
+    if not tail.endswith(crc):
+        print(f'warning: CRC {crc}, board says "{tail}"')
+    img = Image.new('RGB', (w, h))
+    px = img.load()
+    for i in range(w * h):
+        v = data[2 * i] << 8 | data[2 * i + 1]
+        r, g, bl = v >> 11, (v >> 5) & 63, v & 31
+        px[i % w, i // w] = (r << 3 | r >> 2, g << 2 | g >> 4, bl << 3 | bl >> 2)
+    img.save(a.out)
+    print(f'{a.out}: {w}x{h}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('port')
@@ -203,6 +242,10 @@ def main():
     for k in ('f0', 'f1', 'step'):
         p.add_argument(k, type=int)
     p.add_argument('n', type=int, nargs='?', default=20)
+    p = sub.add_parser('screen', help='TDSCREEN: save a screenshot as PNG')
+    p.add_argument('out')
+    p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
+    p.add_argument('--wait', type=float, default=0, help='seconds to wait before the screenshot')
     a = ap.parse_args()
     b = Board(a.port, a.boot)
     try:

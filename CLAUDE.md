@@ -186,6 +186,9 @@ Runtime model (both boards, dual core):
   it after a recalibrating tune (missing before Oct 2026: fixed-gain
   diagnostics read +20 dB floor after a far retune).
 - RSSI is uncalibrated; expect ~10–15 dB below a phone's reading.
+- `TDSCREEN` screenshots show real SSIDs and MAC addresses from the
+  surroundings: never commit them. README pictures of NETWORKS, LEVEL and
+  the BLE lists stay drawn mockups (`tools/readme_images.py`).
 - Heredocs in bash turn `\n` inside C string literals into real newlines;
   write patch scripts with a file-writing tool or check the result.
 

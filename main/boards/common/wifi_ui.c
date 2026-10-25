@@ -36,6 +36,7 @@
 #include "esp_heap_caps.h"
 #include "esp_private/esp_gpio_reserve.h"
 #include "esp_timer.h"
+#include "esp_rom_crc.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -654,6 +655,13 @@ static void night_tint(uint16_t *s, int n) {
     }
 }
 
+/* TDSCREEN: the next full frame also goes out over the serial port, strip
+ * by strip as it is drawn (RGB565, high byte first, as sent to the panel). */
+static volatile bool shot_req;
+static bool shot_on;
+static uint32_t shot_crc;
+static SemaphoreHandle_t shot_done;
+
 static void render(strip_fn fn, int top, int bottom) {
     const bool night = !strcmp(themes[theme].name, "Night");
     for (int y = top; y < bottom; y += SH) {
@@ -661,6 +669,10 @@ static void render(strip_fn fn, int top, int bottom) {
         uint16_t *s = td_lcd_strip_at(y);
         fn(s, y, h);
         if (night) night_tint(s, W * h);
+        if (shot_on) {
+            shot_crc = esp_rom_crc32_le(shot_crc, (const uint8_t *)s, W * h * 2);
+            burst_serial_send(s, W * h * 2);
+        }
         td_lcd_blit(0, y, W, h, s);
     }
 }
@@ -2585,6 +2597,13 @@ static void draw_frame(void) {
     frame_view();
     unlock_ui();
     vTaskPrioritySet(NULL, prio);
+    if (shot_req) {
+        char h[40];
+        const int n = snprintf(h, sizeof(h), "TDSCREEN %d %d\n", W, H);
+        burst_serial_send(h, n);
+        shot_crc = 0;
+        shot_on = true;
+    }
     if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR)) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
                         : sn_page == SN_PAGE_DET ? det_strip
@@ -2595,6 +2614,13 @@ static void draw_frame(void) {
     case PAGE_ZB: render(zb_strip, 0, H); break;
     case PAGE_COV: render(cov_strip, 0, H); break;
     default: render(chan_strip, 0, H); break;
+    }
+    if (shot_on) {
+        char h[40];
+        const int n = snprintf(h, sizeof(h), "TDSCREEN END %08lx\n", (unsigned long)shot_crc);
+        burst_serial_send(h, n);
+        shot_on = shot_req = false;
+        xSemaphoreGive(shot_done);
     }
     td_lcd_idle();
     render_us = (unsigned)(esp_timer_get_time() - tr);
@@ -2955,6 +2981,17 @@ bool board_ui_command(const char *line) {
         int n = snprintf(buf, sizeof(buf), "TDSN state %d based %d margin %.1f meter %.1f ref %.1f caps %u cap %u us gain %.1f\n",
                          sn_state, sn_based, sn_margin, sn_meter, ref, caps, cap_us, zb_last_gain_mean);
         burst_serial_send(buf, n);
+        return true;
+    }
+    if (!strcmp(line, "TDSCREEN")) { /* screenshot of the next frame, see render() */
+        if (!shot_done) shot_done = xSemaphoreCreateBinary();
+        xSemaphoreTake(shot_done, 0);
+        shot_req = true;
+        if (draw_task) xTaskNotifyGive(draw_task);
+        if (xSemaphoreTake(shot_done, pdMS_TO_TICKS(3000)) != pdTRUE) {
+            shot_req = false;
+            burst_serial_send("TDSCREEN timeout\n", 17);
+        }
         return true;
     }
     if (!strcmp(line, "TDBS?")) { /* BLE LIST SDR: decoder totals since start */

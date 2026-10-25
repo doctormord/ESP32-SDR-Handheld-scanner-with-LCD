@@ -648,6 +648,7 @@ usual measurements, for example recordings per second on each page, or the
 | Command | What it does |
 |---|---|
 | `TDSTAT?` | Survey status: page, gain, clipping, frame time, touch point (JC3248). |
+| `TDSCREEN` | Screenshot: sends the next frame as it is drawn (a line `TDSCREEN w h`, then w × h pixels in RGB565, high byte first, then `TDSCREEN END` with the CRC-32 of the pixel bytes). `tools/serial_tests.py PORT screen file.png` saves it as a PNG. |
 | `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | Switch the survey page / the mode / the sniffer page (0 FINDER, 1 DETECTOR, 2 BEARING, 3 to 5 FOCUS WIFI, BLE, ZIGBEE, 6 BLE LIST SDR, 7 BLE LIST). |
 | `TDSCAN` / `TDSCANAUTO 0\|1` | Scan for networks now / periodic scanning off or on. |
 | `TDSCANCH c [ms]` | Scan only channel `c` (passively for `ms` milliseconds, if given) and list every answer (T-Display). |
@@ -762,7 +763,7 @@ These are known, but not left out:
 | `sdkconfig.defaults.tdisplay`, `sdkconfig.defaults.jc3248` | Board configurations |
 | [firmware/](firmware) | Ready-made images |
 | [images/](images) | README pictures, drawn by [tools/readme_images.py](tools/readme_images.py) |
-| [tools/serial_tests.py](tools/serial_tests.py) | Measurements over the serial port |
+| [tools/serial_tests.py](tools/serial_tests.py) | Measurements and screenshots over the serial port |
 
 The other ESP-SDR targets (C2, C3, C5, C6, H2, S2, S31, ODROID-GO) are still
 in the source tree and build as described in
