@@ -421,3 +421,11 @@ this repository unless noted.
   ESP32): after DETECTOR 216 captures/s, 857 valid packets and 12 devices
   in 60 s, 4 KB heap left. Other pages unchanged (survey 4.8 ms/s, FOCUS
   BLE 23.6 ms/s).
+
+## 2026-10-25 — Release v1.3.0
+
+- `ble-sdr` fast-forwarded into `main` (`7dd69fd`); images built from clean
+  build dirs with `v1.3.0` tagged locally first (both report `v1.3.0`).
+- JC3248 image flashed at 0x0 as users do: `VERSION?` revision 7dd69fd
+  (clean), BLE LIST SDR with both decoders, FOCUS BLE 49.4 ms/s.
+  T-Display image not flashed (board not connected; same code as tested).
