@@ -2959,7 +2959,7 @@ bool board_ui_command(const char *line) {
         } else {
             gf_sign = bsign < 0 ? -1 : 1;
             static const unsigned ble_mhz[3] = {2402, 2426, 2480};
-            unsigned caps_n = 0, nmac = 0, shown = 0, mcnt[MACS] = {0};
+            unsigned caps_n = 0, nmac = 0, shown = 0, mcnt[MACS] = {0}, btype[16] = {0};
             int mbest[MACS];
             int64_t dsp_us = 0;
             int rssi_sum = 0;
@@ -2977,6 +2977,7 @@ bool board_ui_command(const char *line) {
                 const unsigned np = gf_block(&g, iq, n, hits, HITS, pk, PKTS, pool, POOL);
                 dsp_us += esp_timer_get_time() - t0;
                 for (unsigned i = 0; i < np; i++) {
+                    if (pk[i].flags & GF_F_CRC) btype[pool[pk[i].off] & 15]++;
                     if (!(pk[i].flags & GF_F_CRC) || pk[i].n < 8) continue;
                     /* Advertisers only, as BLE LIST SDR (bs_add): SCAN_REQ and
                      * CONNECT_IND carry the scanner's address first. */
@@ -3009,6 +3010,10 @@ bool board_ui_command(const char *line) {
                                    (unsigned)g.pkts, (unsigned)g.crc_ok, (unsigned)g.rejected, nmac,
                                    g.crc_ok ? rssi_sum / 10.0f / g.crc_ok : 0.0f, caps_n ? dsp_us / 1000.0f / caps_n : 0.0f);
             burst_serial_send(buf, k);
+            int kt = snprintf(buf, sizeof(buf), "TDBLESDR types");
+            for (int t = 0; t < 16; t++) kt += snprintf(buf + kt, sizeof(buf) - kt, " %u", btype[t]);
+            buf[kt++] = '\n';
+            burst_serial_send(buf, kt);
             for (unsigned m = 0; m < nmac; m++) {
                 const uint8_t *a = macs[m];
                 const int k2 = snprintf(buf, sizeof(buf), "TDBLESDR adv %02x%02x%02x%02x%02x%02x n %u best %.1f dBFS\n",
