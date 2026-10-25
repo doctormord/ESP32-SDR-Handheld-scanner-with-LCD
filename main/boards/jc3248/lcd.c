@@ -66,6 +66,7 @@ UI_BSS static uint16_t strip[TD_LCD_W * TD_STRIP_H];
 static bool dirty;
 static volatile bool frame_defer; /* the UI is drawing on the other core: do not send */
 unsigned td_lcd_flush_us, td_lcd_blit_us; /* diagnostics */
+unsigned td_lcd_build_us, td_lcd_hash_us;  /* diagnostics: per flush */
 
 static bool on_done(esp_lcd_panel_io_handle_t h, esp_lcd_panel_io_event_data_t *e, void *ctx) {
     (void)h; (void)e; (void)ctx;
@@ -129,7 +130,7 @@ static void flush_from(const uint16_t *f) {
      * so the one built next is free once at most one send is in flight. */
     int cur = 0;
     bool open = false; /* a window from an earlier changed chunk runs on */
-    unsigned sent = 0;
+    unsigned sent = 0, build_us = 0, hash_us = 0;
     for (int k = 0; k < CHUNKS; k++) {
         if (in_send_task && *capture_waiting) {
             /* Bus quiet (both buffers back), let the capture run, go on. */
@@ -141,8 +142,12 @@ static void flush_from(const uint16_t *f) {
         }
         xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
         uint16_t *b = bounce[cur];
+        const int64_t t0 = esp_timer_get_time();
         build_chunk(b, k * CHUNK_ROWS);
+        const int64_t t1 = esp_timer_get_time();
         const uint32_t h = hash_chunk(b);
+        build_us += (unsigned)(t1 - t0);
+        hash_us += (unsigned)(esp_timer_get_time() - t1);
         if (!all && h == chunk_hash[k]) {
             xSemaphoreGive(chunk_done); /* not sent: the buffer stays free */
             open = false;
@@ -160,6 +165,8 @@ static void flush_from(const uint16_t *f) {
     }
     hashes_valid = true;
     td_lcd_chunks_sent = sent;
+    td_lcd_build_us = build_us;
+    td_lcd_hash_us = hash_us;
     /* Back to two free bounce buffers once the last chunks are out. */
     for (int i = 0; i < 2; i++) xSemaphoreTake(chunk_done, pdMS_TO_TICKS(100));
     for (int i = 0; i < 2; i++) xSemaphoreGive(chunk_done);

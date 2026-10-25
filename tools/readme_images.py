@@ -8,6 +8,11 @@ Pillow's default font is Aileron, the same font the firmware's smooth digits
 come from (tools/gen_fonts.py).
 
     python tools/readme_images.py            # writes images/page-*.png
+    python tools/readme_images.py --shots DIR  # real screenshots where DIR has one
+
+With --shots, a page whose screenshot DIR/page-*.png exists (taken with
+`tools/serial_tests.py PORT readme DIR`, names and addresses pixelated) is
+used instead of the drawing, with the same numbered markers.
 """
 import math
 import os
@@ -94,9 +99,14 @@ def mhz_x(f, f0=2400.0, f1=2484.0):
     return (f - f0) * W / (f1 - f0)
 
 
+SHOTS = None  # folder with real screenshots (--shots)
+
+
 def frame(screen, marks, name):
     """Screen on a dark bezel with numbered markers: on the screen at (x, y),
     or for a whole row in the left margin at height y (x = None)."""
+    if SHOTS and os.path.exists(os.path.join(SHOTS, name)):
+        screen = Image.open(os.path.join(SHOTS, name)).convert('RGB')
     ml, m = 34, 14
     img = Image.new('RGB', (W + ml + m, H + 2 * m), (30, 30, 34))
     d = ImageDraw.Draw(img)
@@ -457,6 +467,9 @@ def page_ble_sdr():
 
 
 if __name__ == '__main__':
+    import sys
+    if '--shots' in sys.argv:
+        SHOTS = sys.argv[sys.argv.index('--shots') + 1]
     os.makedirs(OUT, exist_ok=True)
     page_waterfall()
     page_networks()

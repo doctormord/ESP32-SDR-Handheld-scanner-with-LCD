@@ -15,11 +15,13 @@ script waits --boot seconds and drops the boot log before the first command.
     python tools/serial_tests.py PORT probe 3300 3900 20
     python tools/serial_tests.py PORT screen shot.png  # screenshot (needs Pillow)
     python tools/serial_tests.py PORT screen focus.png --cmd 'TDSNPAGE 4' --wait 10
+    python tools/serial_tests.py PORT gif waterfall.gif --secs 20 --wait 10
 
 PORT: JC3248 /dev/cu.usbmodem* or /dev/ttyACM* (USB serial/JTAG), T-Display
 /dev/cu.usbserial-* or /dev/ttyUSB* (CP2104, 2 Mbaud).
 """
 import argparse
+import os
 import re
 import sys
 import time
@@ -177,41 +179,170 @@ def do_probe(b, a):
             print(ln)
 
 
-def do_screen(b, a):
-    """TDSCREEN: header line, W*H RGB565 pixels high byte first, END line
-    with the CRC-32 of the pixel bytes."""
+def grab(b, half=False):
+    """One TDSCREEN frame as a PIL image, or None (half: 2x2 averaged)."""
     import zlib
+    import numpy as np
     from PIL import Image
     s = b.s
-    for c in a.cmd:  # opening the port may have reset the board: set it up here
-        b.cmd(c, 1)
-    time.sleep(a.wait)
     s.reset_input_buffer()
-    s.write(b'TDSCREEN\n')
+    s.write(b'TDSCREEN 2\n' if half else b'TDSCREEN\n')
     end, line = time.time() + 5, b''
     while time.time() < end and not line.startswith(b'TDSCREEN '):
         line = s.readline().replace(b'\0', b'')
     m = re.match(rb'TDSCREEN (\d+) (\d+)', line)
     if not m:
-        sys.exit(f'no screenshot ({line!r})')
+        return None
     w, h = int(m.group(1)), int(m.group(2))
     data, end = bytearray(), time.time() + 10
     while len(data) < w * h * 2 and time.time() < end:
         data += s.read(w * h * 2 - len(data))
     tail = s.readline().decode(errors='replace').strip()
     if len(data) < w * h * 2:
-        sys.exit(f'short: {len(data)} of {w * h * 2} bytes')
-    crc = f'{zlib.crc32(bytes(data)) & 0xffffffff:08x}'
-    if not tail.endswith(crc):
-        print(f'warning: CRC {crc}, board says "{tail}"')
-    img = Image.new('RGB', (w, h))
-    px = img.load()
-    for i in range(w * h):
-        v = data[2 * i] << 8 | data[2 * i + 1]
-        r, g, bl = v >> 11, (v >> 5) & 63, v & 31
-        px[i % w, i // w] = (r << 3 | r >> 2, g << 2 | g >> 4, bl << 3 | bl >> 2)
+        return None
+    if not tail.endswith(f'{zlib.crc32(bytes(data)) & 0xffffffff:08x}'):
+        print(f'warning: CRC mismatch ("{tail}")')
+    v = np.frombuffer(bytes(data), dtype='>u2').reshape(h, w).astype(np.uint32)
+    r, g, bl = v >> 11, (v >> 5) & 63, v & 31
+    rgb = np.dstack([(r << 3) | (r >> 2), (g << 2) | (g >> 4), (bl << 3) | (bl >> 2)]).astype(np.uint8)
+    return Image.fromarray(rgb, 'RGB')
+
+
+def setup(b, a):
+    for c in a.cmd:  # opening the port may have reset the board: set it up here
+        b.cmd(c, 1)
+    # Keep reading while waiting: a JC3248 restarted (BLE LIST in/out) while
+    # the host does not read leaves its USB port silent.
+    b.read(a.wait)
+
+
+def do_screen(b, a):
+    """TDSCREEN: header line, W*H RGB565 pixels high byte first, END line
+    with the CRC-32 of the pixel bytes."""
+    setup(b, a)
+    img = grab(b)
+    if img is None:
+        sys.exit('no screenshot')
     img.save(a.out)
-    print(f'{a.out}: {w}x{h}')
+    print(f'{a.out}: {img.width}x{img.height}')
+
+
+def save_gif(frames, durations, out, colors=256, dither=False):
+    """One palette for all frames (taken from a few of them), so the GIF
+    has no per-frame palettes and changes between frames stay small."""
+    from PIL import Image
+    pick = frames[::max(1, len(frames) // 6)]
+    sheet = Image.new('RGB', (pick[0].width, pick[0].height * len(pick)))
+    for i, f in enumerate(pick):
+        sheet.paste(f, (0, i * f.height))
+    # The UI's colours (wifi_ui.c C_*, as RGB565 shows them) stay exact where
+    # they appear, text colours with a half tone for their smoothed edges;
+    # the rest of the palette goes to the spectrum and waterfall shades.
+    # Otherwise grey text turns brown.
+    import numpy as np
+    q = lambda c: tuple((v >> 3 << 3 | v >> 5) if i != 1 else (v >> 2 << 2 | v >> 6) for i, v in enumerate(c))
+    ui = [(0, 0, 0), (255, 255, 255), (220, 220, 220), (110, 110, 110), (24, 24, 48), (255, 220, 0),
+          (0, 200, 230), (40, 220, 40), (230, 60, 230), (255, 140, 0), (255, 40, 40)]
+    text = {(220, 220, 220), (110, 110, 110), (255, 220, 0), (0, 200, 230)}
+    px = np.asarray(sheet).reshape(-1, 3).astype(int)
+    fixed = []
+    for c in ui:
+        n = int((np.abs(px - q(c)).max(axis=1) <= 4).sum())
+        if n > px.shape[0] // 2000 or c == (0, 0, 0):
+            fixed.append(q(c))
+            if c in text:
+                fixed.append(tuple(v // 2 for v in q(c)))
+    fixed = fixed[:colors // 2]
+    rest = sheet.quantize(colors=colors - len(fixed), method=Image.Quantize.MEDIANCUT).getpalette()
+    rest = [tuple(rest[3 * i:3 * i + 3]) for i in range(colors - len(fixed))]
+    flat = [v for c in fixed + rest for v in c]
+    pal = Image.new('P', (1, 1))
+    pal.putpalette(flat + [0] * (768 - len(flat)))
+    d = Image.Dither.FLOYDSTEINBERG if dither else Image.Dither.NONE
+    q = [f.quantize(palette=pal, dither=d) for f in frames]
+    q[0].save(out, save_all=True, append_images=q[1:], duration=durations, loop=0, optimize=True)
+
+
+def do_gif(b, a):
+    """Screenshots back to back as an animated GIF, each frame shown for the
+    time it really took (so it plays at the board's speed)."""
+    setup(b, a)
+    frames, times = [], []
+    end = time.time() + a.secs
+    while time.time() < end:
+        img = grab(b, a.half)
+        if img is not None:
+            frames.append(img)
+            times.append(time.time())
+    if len(frames) < 2:
+        sys.exit('too few frames')
+    durations = [int((t1 - t0) * 1000) for t0, t1 in zip(times, times[1:])]
+    durations.append(durations[-1])
+    if a.scale != 1:
+        frames = [f.resize((f.width * a.scale, f.height * a.scale)) for f in frames]
+    if a.raw:  # the frames as PNGs plus their durations, to try palettes later
+        os.makedirs(a.raw, exist_ok=True)
+        for i, f in enumerate(frames):
+            f.save(os.path.join(a.raw, f'{i:04d}.png'))
+        with open(os.path.join(a.raw, 'durations.txt'), 'w') as fh:
+            fh.write(' '.join(map(str, durations)))
+    save_gif(frames, durations, a.out, a.colors, a.dither)
+    print(f'{a.out}: {len(frames)} frames, {len(frames) / (times[-1] - times[0]):.1f} frames/s')
+
+
+# README pages: file, commands, seconds to settle, boxes to black out
+# (x0, y0, x1, y1, in JC3248 pixels, 480x320; scaled to the T-Display's
+# 240x135, whose layout is the same at half size) where network names and
+# addresses are shown.
+README_PAGES = [
+    ('page-waterfall.png', ['TDSNIFF 0', 'TDPAGE 0'], 15, []),
+    ('page-networks.png', ['TDSNIFF 0', 'TDPAGE 1'], 15, [(28, 20, 284, 320)]),
+    ('page-channels.png', ['TDSNIFF 0', 'TDPAGE 2'], 15, []),
+    ('page-zigbee.png', ['TDSNIFF 0', 'TDPAGE 3'], 15, []),
+    ('page-coverage.png', ['TDSNIFF 0', 'TDPAGE 4'], 25, [(0, 22, 480, 66)]),
+    ('page-detector.png', ['TDSNPAGE 1'], 25, []),
+    ('page-focus.png', ['TDSNPAGE 3', 'TDFOCUS 5'], 15, []),
+    ('page-ble-list-sdr.png', ['TDSNPAGE 6'], 40, [(108, 20, 446, 320)]),
+    ('page-ble-list.png', ['TDSNPAGE 7'], 40, [(108, 20, 446, 320)]),
+]
+
+
+def redact(img, box, line):
+    """Each text line inside box becomes the same flat grey bar over the full
+    width: nothing of the names or addresses is left, not even their
+    length."""
+    import numpy as np
+    from PIL import Image
+    a = np.asarray(img).copy()
+    x0, y0, x1, y1 = box
+    a[y0:y1, x0:x1] = 0
+    for y in range(y0, y1, line):  # one bar per line, all the same colour
+        a[y + line // 5:min(y + line - line // 5, y1), x0:x1] = (48, 48, 56)
+    img.paste(Image.fromarray(a))
+
+
+def do_readme(b, a):
+    """Screenshots of the README pages with names and addresses blacked out,
+    for `tools/readme_images.py --shots DIR`. Check them before committing."""
+    os.makedirs(a.dir, exist_ok=True)
+    for name, cmds, wait, boxes in README_PAGES:
+        if a.only and name not in a.only:
+            continue
+        for c in cmds:
+            b.cmd(c, 1)
+        b.read(wait)
+        if name == 'page-ble-list.png' and cap_n(a.board, a.port) == 8192:
+            continue  # no Bluetooth stack on the T-Display
+        img = grab(b)
+        if img is None:
+            print(f'{name}: no screenshot')
+            continue
+        k = img.width / 480
+        for box in boxes:
+            x0, y0, x1, y1 = (int(round(v * k)) for v in box)
+            redact(img, (x0, y0, x1, min(y1, img.height)), int(round(20 * k)))
+        img.save(os.path.join(a.dir, name))
+        print(f'{name}: ok')
 
 
 def main():
@@ -246,6 +377,19 @@ def main():
     p.add_argument('out')
     p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
     p.add_argument('--wait', type=float, default=0, help='seconds to wait before the screenshot')
+    p = sub.add_parser('readme', help='README page screenshots, names and addresses blacked out')
+    p.add_argument('dir')
+    p.add_argument('--only', nargs='*', help='only these files (page-networks.png ...)')
+    p = sub.add_parser('gif', help='screenshots back to back as an animated GIF')
+    p.add_argument('out')
+    p.add_argument('--secs', type=float, default=15)
+    p.add_argument('--scale', type=int, default=1)
+    p.add_argument('--half', action='store_true', help='half resolution from the board (faster)')
+    p.add_argument('--colors', type=int, default=256, help='palette size (one palette for all frames)')
+    p.add_argument('--dither', action='store_true')
+    p.add_argument('--raw', help='also save the frames as PNGs into this folder')
+    p.add_argument('--cmd', action='append', default=[], help='command to send first (repeatable)')
+    p.add_argument('--wait', type=float, default=0, help='seconds to wait before recording')
     a = ap.parse_args()
     b = Board(a.port, a.boot)
     try:

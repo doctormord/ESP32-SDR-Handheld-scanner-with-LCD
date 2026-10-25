@@ -503,3 +503,48 @@ the fixed gain 50 of v1.3.0.
   branches were deleted on GitHub.
 - Rule (CLAUDE.md): example data in mockups is invented, never taken from
   logs or screenshots.
+## 2026-10-25 — Recordings from the device (branch `screen-gifs`)
+
+- `TDSCREEN 2`: 2×2 averaged frames, a quarter of the data. JC over USB:
+  full frames 2.9 frames/s, half 7.8; half looks soft (text blocky), the
+  owner chose full resolution, 5 s.
+- `tools/serial_tests.py gif`: frames back to back, one palette for all
+  frames. Waterfall, 8 s: 256 colours 1.09 MB, 32 0.61, 16 0.41; dithering
+  makes them larger (16: 0.55). Grey text turned brown with a plain
+  median-cut palette (anti-aliased text has few exact pixels): the UI's
+  C_* colours that appear, plus half tones of the text colours, are now
+  fixed in the palette. 32 colours keep the waterfall smooth, 16 look
+  stepped. 5 s at 32 colours: 0.22–0.31 MB per page.
+- First recordings showed "listen 0.8 ms/s" on FOCUS WIFI: the main loop
+  waited for each frame. TDSCREEN now returns at once and the drawing task
+  sends; then a comb of lines appeared in the spectrum on every page — the
+  USB traffic itself. Captures now wait while a frame goes out (like the
+  display bus): clean spectrum, but the listening time shown while
+  recording is low (FOCUS WIFI 2.4, BLE 7.1, ZIGBEE 6.0 ms/s). README
+  says so under the recordings.
+- README: live GIFs of WATERFALL FULL and the three FOCUS pages (JC3248),
+  next to the numbered mockups.
+- `serial_tests.py readme DIR`: README pages from the device with names and
+  addresses pixelated (8-px blocks; NETWORKS SSIDs, LEVEL name and MAC, BLE
+  lists names and addresses); `readme_images.py --shots DIR` can put the
+  numbered markers on them. Tried replacing the mockups: the markers and
+  the README's example sentences follow the mockups' example data (e.g.
+  CHANNELS' green column on 11, real data had it on 1), so the mockups stay
+  for the numbered explanations. README: new section "On the device", a
+  gallery of the real (pixelated) screenshots of nine pages (JC3248,
+  236 KB).
+
+## 2026-10-25 — JC3248: what the rotation in the flush costs (branch `jc-flush`)
+
+- `TDSTAT?` now shows `build` (rotation into the bounce buffer) and `hash`
+  per flush. JC, 3 readings each: WATERFALL 26.3 frames/s, render 37 ms,
+  flush 25 ms of which build 6.4–7.0 ms and hash 1.4 ms (40 chunks; the
+  rest is the bus, ~15 ms for 307 KB at 40 MHz QSPI); NETWORKS 29.6,
+  render 19 ms, flush 9 ms, build 5.1–5.3, hash 1.3 (3–6 chunks); FOCUS
+  WIFI 23.7, render 41 ms, build 6.5–6.9.
+- Two pixels per 32-bit load in build_chunk: no change (6.3–6.9 ms):
+  the rotation is bound by PSRAM cache misses (a 12-row chunk uses 24 of
+  64 bytes of each cache line). Reverted. Larger chunks would need internal
+  RAM (1.4 KB free); drawing natively in panel orientation would move the
+  transpose into the strips, est. 2–3 ms saved per frame. Not done
+  (BACKLOG "Not doing").

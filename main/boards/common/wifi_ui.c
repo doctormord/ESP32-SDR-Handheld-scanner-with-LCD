@@ -164,7 +164,11 @@ static volatile bool capture_waiting;
 static const uint32_t *quiet_capture_div(unsigned n, unsigned divider);
 static const uint32_t *quiet_capture_n(unsigned n) { return quiet_capture_div(n, 0); }
 /* divider: 0 = 80 MS/s, 1 = 40 MS/s, 6 = 16 MS/s (native dump clocks). */
+static volatile bool shot_busy;  /* a TDSCREEN frame is going out over USB */
 static const uint32_t *quiet_capture_div(unsigned n, unsigned divider) {
+    /* USB traffic of a screenshot shows as a comb of lines in the spectrum
+     * (JC, 2026-10-25), like the display bus: wait for it too. */
+    for (int i = 0; shot_busy && i < 200; i++) vTaskDelay(pdMS_TO_TICKS(5));
     capture_waiting = true;
     lock_lcd();
     capture_waiting = false;
@@ -660,8 +664,22 @@ static void night_tint(uint16_t *s, int n) {
  * by strip as it is drawn (RGB565, high byte first, as sent to the panel). */
 static volatile bool shot_req;
 static bool shot_on;
+static int shot_div = 1;           /* 2: every 2x2 pixels averaged (GIFs, a quarter of the data) */
+UI_BSS static uint16_t shot_row[W / 2];
+static uint16_t shot_avg(uint16_t a, uint16_t b, uint16_t c, uint16_t d) {
+    /* Pixels are stored byte-swapped (high byte first, as the panel wants). */
+    const uint16_t p[4] = {a, b, c, d};
+    unsigned r = 0, g = 0, bl = 0;
+    for (int i = 0; i < 4; i++) {
+        const uint16_t v = (uint16_t)(p[i] << 8 | p[i] >> 8);
+        r += v >> 11;
+        g += (v >> 5) & 63;
+        bl += v & 31;
+    }
+    const uint16_t v = (uint16_t)((r / 4) << 11 | (g / 4) << 5 | bl / 4);
+    return (uint16_t)(v << 8 | v >> 8);
+}
 static uint32_t shot_crc;
-static SemaphoreHandle_t shot_done;
 
 static void render(strip_fn fn, int top, int bottom) {
     const bool night = !strcmp(themes[theme].name, "Night");
@@ -670,9 +688,17 @@ static void render(strip_fn fn, int top, int bottom) {
         uint16_t *s = td_lcd_strip_at(y);
         fn(s, y, h);
         if (night) night_tint(s, W * h);
-        if (shot_on) {
+        if (shot_on && shot_div == 1) {
             shot_crc = esp_rom_crc32_le(shot_crc, (const uint8_t *)s, W * h * 2);
             burst_serial_send(s, W * h * 2);
+        } else if (shot_on) {
+            for (int r = 0; r + 1 < h; r += 2) {
+                const uint16_t *a = s + r * W, *b = a + W;
+                for (int x = 0; x < W / 2; x++)
+                    shot_row[x] = shot_avg(a[2 * x], a[2 * x + 1], b[2 * x], b[2 * x + 1]);
+                shot_crc = esp_rom_crc32_le(shot_crc, (const uint8_t *)shot_row, sizeof(shot_row));
+                burst_serial_send(shot_row, sizeof(shot_row));
+            }
         }
         td_lcd_blit(0, y, W, h, s);
     }
@@ -2600,10 +2626,12 @@ static void draw_frame(void) {
     vTaskPrioritySet(NULL, prio);
     if (shot_req) {
         char h[40];
-        const int n = snprintf(h, sizeof(h), "TDSCREEN %d %d\n", W, H);
+        /* Strips are 16 rows, so 2x2 blocks never straddle two; an odd last
+         * row (T-Display: 135) is left out. */
+        const int n = snprintf(h, sizeof(h), "TDSCREEN %d %d\n", W / shot_div, H / shot_div);
         burst_serial_send(h, n);
         shot_crc = 0;
-        shot_on = true;
+        shot_busy = shot_on = true;
     }
     if (sniffer && (sn_page == SN_PAGE_BLIST || sn_page == SN_PAGE_BSDR)) {bl_prepare(); render(bl_strip, 0, H);}
     else if (sniffer) render(sn_page == SN_PAGE_FIND ? sn_find_strip
@@ -2620,8 +2648,7 @@ static void draw_frame(void) {
         char h[40];
         const int n = snprintf(h, sizeof(h), "TDSCREEN END %08lx\n", (unsigned long)shot_crc);
         burst_serial_send(h, n);
-        shot_on = shot_req = false;
-        xSemaphoreGive(shot_done);
+        shot_busy = shot_on = shot_req = false;
     }
     td_lcd_idle();
     render_us = (unsigned)(esp_timer_get_time() - tr);
@@ -2924,9 +2951,11 @@ bool board_ui_command(const char *line) {
         extern unsigned scan_phase_us[4];
         extern unsigned td_lcd_flush_us __attribute__((weak)), td_lcd_blit_us __attribute__((weak));
         extern unsigned td_lcd_chunks_sent __attribute__((weak));
+        extern unsigned td_lcd_build_us __attribute__((weak)), td_lcd_hash_us __attribute__((weak));
         if (&td_lcd_flush_us) {
-            n = snprintf(buf, sizeof(buf), "lcd flush %u us blit-sum %u us chunks %u\n", td_lcd_flush_us, td_lcd_blit_us,
-                         &td_lcd_chunks_sent ? td_lcd_chunks_sent : 0);
+            n = snprintf(buf, sizeof(buf), "lcd flush %u us blit-sum %u us chunks %u build %u us hash %u us\n",
+                         td_lcd_flush_us, td_lcd_blit_us, &td_lcd_chunks_sent ? td_lcd_chunks_sent : 0,
+                         &td_lcd_build_us ? td_lcd_build_us : 0, &td_lcd_hash_us ? td_lcd_hash_us : 0);
             td_lcd_blit_us = 0;
             burst_serial_send(buf, n);
         }
@@ -2986,15 +3015,13 @@ bool board_ui_command(const char *line) {
         burst_serial_send(buf, n);
         return true;
     }
-    if (!strcmp(line, "TDSCREEN")) { /* screenshot of the next frame, see render() */
-        if (!shot_done) shot_done = xSemaphoreCreateBinary();
-        xSemaphoreTake(shot_done, 0);
+    if (!strncmp(line, "TDSCREEN", 8) && (!line[8] || line[8] == ' ')) {
+        /* Screenshot of the next frame, sent by the drawing task (render());
+         * the main loop goes on measuring meanwhile. Send no other command
+         * until "TDSCREEN END" has arrived. */
+        shot_div = !strcmp(line + 8, " 2") ? 2 : 1;
         shot_req = true;
         if (draw_task) xTaskNotifyGive(draw_task);
-        if (xSemaphoreTake(shot_done, pdMS_TO_TICKS(3000)) != pdTRUE) {
-            shot_req = false;
-            burst_serial_send("TDSCREEN timeout\n", 17);
-        }
         return true;
     }
     if (!strcmp(line, "TDBS?")) { /* BLE LIST SDR: decoder totals since start */
