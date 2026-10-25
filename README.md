@@ -321,6 +321,43 @@ On the JC3248, DETECTOR PEAKS already listens to the whole band without
 gaps, and FOCUS adds a finer frequency step. On the T-Display, FOCUS is
 also the page that listens the longest.
 
+### BLE LIST SDR
+
+<img src="images/page-ble-list-sdr.png" width="60%" alt="BLE list SDR page with numbered parts">
+
+This page lists Bluetooth LE devices without a Bluetooth stack. It decodes
+the advertising packets from the receiver's own samples, using the GFSK
+decoder of the [ESPsoup firmware](https://github.com/pit711/espsoup-firmware).
+On the T-Display this is the only BLE list. On the JC3248 it works without
+the restart that BLE LIST needs.
+
+The page listens to the advertising channels 37, 38 and 39 in turn, one
+second each, with a fixed gain. Each recording is 1 ms long at 16 MS/s. A
+packet is only decoded when it fits completely into one recording.
+
+1. Devices heard recently, and in total.
+2. Level in dBFS, averaged. This is relative to the receiver's full scale,
+   not a calibrated dBm value. Near devices read about −10 to −20 dBFS,
+   weak ones −35 and lower.
+3. Level bar from −50 to 0 dBFS. The white mark is the strongest packet.
+4. Name from the advertising data, else the manufacturer, as on BLE LIST.
+5. Address. `*` marks a fixed (public) address.
+6. Seconds since the device was last heard.
+
+Hold the next-page key to clear the list.
+
+Compared with BLE LIST, measured on the JC3248 at the same place:
+
+- It finds fewer devices. In one test BLE LIST showed 16 devices, 8 of them
+  weaker than −80 dBm, while BLE LIST SDR found about the 6 to 10 stronger
+  ones. The SDR path is roughly 15 to 20 dB less sensitive than the
+  Bluetooth receiver, although both use the same radio.
+- It fills and updates more slowly. The receiver listens about 30 % of the
+  time (335 recordings per second, two decoders on two cores), while the
+  Bluetooth stack listens all the time.
+- A very strong device right next to the board (more than about −5 dBFS)
+  overloads the receiver and hides weaker ones.
+
 ### BLE LIST (JC3248 only)
 
 <img src="images/page-ble-list.png" width="60%" alt="BLE list page with numbered parts">
@@ -382,7 +419,7 @@ What they do:
 
 | Key | Short press | Hold (1 s) |
 |---|---|---|
-| Next-page | next page | Survey: scan for networks now. On WATERFALL and CHANNELS WIFI, keep holding to 2 s to switch periodic scanning on or off. LEVEL WIFI SINGLE: previous network. Sniffer: zero the page. FOCUS: next channel. BLE LIST: clear the list. |
+| Next-page | next page | Survey: scan for networks now. On WATERFALL and CHANNELS WIFI, keep holding to 2 s to switch periodic scanning on or off. LEVEL WIFI SINGLE: previous network. Sniffer: zero the page. FOCUS: next channel. BLE LIST and BLE LIST SDR: clear the list. |
 | Mode | switch between survey and sniffer | Survey: next colour theme. LEVEL WIFI SINGLE: next network. Sniffer: remove the zeroing. FOCUS: previous channel. |
 
 While you hold a key, a thin bar at the top of the header fills up from left
@@ -609,7 +646,7 @@ usual measurements, for example recordings per second on each page, or the
 | Command | What it does |
 |---|---|
 | `TDSTAT?` | Survey status: page, gain, clipping, frame time, touch point (JC3248). |
-| `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | Switch the survey page / the mode / the sniffer page (0 FINDER, 1 DETECTOR, 2 BEARING, 3 to 5 FOCUS WIFI, BLE, ZIGBEE, 6 BLE LIST). |
+| `TDPAGE n` / `TDSNIFF 0\|1` / `TDSNPAGE n` | Switch the survey page / the mode / the sniffer page (0 FINDER, 1 DETECTOR, 2 BEARING, 3 to 5 FOCUS WIFI, BLE, ZIGBEE, 6 BLE LIST SDR, 7 BLE LIST). |
 | `TDSCAN` / `TDSCANAUTO 0\|1` | Scan for networks now / periodic scanning off or on. |
 | `TDSCANCH c [ms]` | Scan only channel `c` (passively for `ms` milliseconds, if given) and list every answer (T-Display). |
 | `TDSN?` / `TDNULL` | FINDER status / zero FINDER. |
@@ -618,6 +655,8 @@ usual measurements, for example recordings per second on each page, or the
 | `TDZB?` | Zigbee channels: level and activity per channel. |
 | `TDCOV?` / `TDCOVSEL -1\|0\|1` | LEVEL WIFI SINGLE: network, channel, signal, lowest, highest, frames per second / choose the previous, strongest or next network. |
 | `TDBLE?` | BLE LIST: every device with MAC, address type, signal, average, highest, manufacturer, packets, age and name. |
+| `TDBS?` | BLE LIST SDR: channel, recordings decoded by each of the two decoders, packets, valid packets, devices. |
+| `TDBLESDR ch s [gain [sign [filt [bw]]]]` | Decodes BLE advertising on channel `ch` (37 to 39) for `s` seconds with the display paused, and lists the advertisers with packet count and level. `gain` default 50. `filt 1` puts a low-pass filter in front of the decoder, `bw` sets the analogue filter (default 15 MHz). Also prints how many valid packets of each type arrived. |
 | `TDFOCUS?` / `TDFOCUS n` | FOCUS status: channel, sample rate, recordings per second, listening time, airtime, level, floor / choose channel `n` (0 to 12 = Wi-Fi 1 to 13, 13 to 15 = BLE 37 to 39, 16 to 31 = Zigbee 11 to 26). It is saved as that page's channel. In sniffer mode the board also switches to that page. |
 | `TDPROBE f0 f1 step [n]` | Tunes from `f0` to `f1` MHz in steps of `step` and takes `n` recordings at each frequency (default 20). Prints the noise floor, the strongest line and where it is, and how many recordings had a short burst. |
 | `TDSPAN d lo bw n` | Measures how flat the noise floor is across the span. `d` is the sample rate as in `TDRATE`, `lo` the frequency in MHz, `bw` the filter width in MHz, `n` the number of recordings. Prints the floor in 2 MHz steps. |
@@ -694,8 +733,10 @@ These are known, but not left out:
   pages, for example a BLE watch that only syncs now and then. Use BLE LIST
   for those. It decodes the advertising packets and gets a signal strength
   for each device.
-- **The T-Display has no BLE list** (it does not fit into the ESP32 build).
-  Its detector records pieces one after another instead of without gaps.
+- **The T-Display has no Bluetooth stack** (it does not fit into the ESP32
+  build). Its only BLE list is BLE LIST SDR, which hears weak devices less
+  well than a real Bluetooth receiver. Its detector records pieces one
+  after another instead of without gaps.
 - **BLE LIST restarts the JC3248** when you open or leave it (see above).
 - The gain steps of the ESP32-S3 are not even. The detector therefore picks
   a fixed gain instead of using the automatic gain.
@@ -708,6 +749,7 @@ These are known, but not left out:
 |---|---|
 | [main/boards/common/wifi_ui.c](main/boards/common/wifi_ui.c) | The user interface of both boards: survey and sniffer pages, themes, zeroing, serial commands |
 | [main/boards/common/zb.c](main/boards/common/zb.c) | Band analysis: spectrum, occupancy, airtime |
+| [main/boards/common/gfsk.h](main/boards/common/gfsk.h) | BLE packet decoder for BLE LIST SDR (from the ESPsoup firmware) |
 | [main/boards/common/aafont.h](main/boards/common/aafont.h) | Smooth digits and text (made by [tools/gen_fonts.py](tools/gen_fonts.py)) |
 | [main/boards/tdisplay/](main/boards/tdisplay) | T-Display: display driver, buttons |
 | [main/boards/jc3248/](main/boards/jc3248) | JC3248W535: display driver with PSRAM frame, touch |
@@ -736,4 +778,6 @@ GPL-3.0-or-later, like ESP-SDR and esp-sdr-glow (see [LICENSE](LICENSE)).
   handheld interface, the phosphor display and the channel analysis.
 - [ESP-DSP](https://github.com/espressif/esp-dsp) by Espressif, Apache-2.0
   (submodule).
+- GFSK/BLE decoder from the [ESPsoup firmware](https://github.com/pit711/espsoup-firmware)
+  by Peter Holzhauser, GPL-3.0-or-later.
 - Font: Aileron by Sora Sagano, CC0.

@@ -148,6 +148,14 @@ Runtime model (both boards, dual core):
   so only row windows are used.
 - The phosphor fades outside `ui_lock`, so the measurement never waits for
   the fade pass.
+- BLE LIST SDR (`gfsk.h`, ESPsoup decoder): fixed gain 50 (AGC changes
+  gain inside packets), 16380-sample captures at 16 MS/s, boxcar R=4 /
+  4 samples per bit. A second decoder task on the drawing core decodes a
+  copy (PSRAM on the JC); both BLE lists draw at 5 frames/s
+  (`DRAW_LIST_US`) or the JC's drawing core (~28 ms render + ~13 ms send
+  per frame) leaves it no time. Decoder state lives in `UI_BSS` (S3 BSS).
+  `TDBLESDR` counts advertisers only (types 0/1/2/4/6): SCAN_REQ carries
+  the scanner's address first.
 - Waterfall persistence: each new row mixed 60/40 with the previous one,
   never below 82 % of it, 1-2-1 blur across.
 - 802.15.4 / FOCUS blanking (`zb.c`): DC ±(0.25 MHz + bin/2) and 40 MHz

@@ -226,7 +226,7 @@ def page_channels():
 def page_detector():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'DETECTOR PEAKS', 'zeroed +4dB G34 1:12', C_GREEN, 'S2/7')
+    header(d, 'DETECTOR PEAKS', 'zeroed +4dB G34 1:12', C_GREEN, 'S2/8')
     text(d, P(4), P(10) + P(5), '+18', C_YELLOW, BIG)
     text(d, P(8) + d.textlength('+18', font=BIG), P(10) + P(20), 'dB', C_DIM)
     text(d, P(110), P(10) + P(6), 'Peak +27 dB', C_TEXT)
@@ -261,7 +261,7 @@ def page_detector():
 def page_ble():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'BLE LIST', '18 active, 31 total', C_GREEN, 'S7/7')
+    header(d, 'BLE LIST', '18 active, 31 total', C_GREEN, 'S8/8')
     devs = [(-41, -38, 'Smartwatch', 'aabbcc000001', 0, 'new'), (-50, -46, '(Microsoft)', 'aabbcc000002', 0, ''),
             (-52, -47, '?', 'aabbcc000003', 0, ''), (-58, -54, 'USB meter', 'aabbcc000004*', 0, ''),
             (-61, -57, 'Thermometer 1', 'aabbcc000005*', 2, ''), (-69, -63, '(Apple)', 'aabbcc000006', 0, ''),
@@ -360,7 +360,7 @@ def page_coverage():
 def page_focus():
     img = Image.new('RGB', (W, H), C_BG)
     d = ImageDraw.Draw(img)
-    header(d, 'FOCUS', 'WIFI 6  40 MS/s', C_CYAN, 'S4/7')
+    header(d, 'FOCUS', 'WIFI 6  40 MS/s', C_CYAN, 'S4/8')
     by = P(14)
     air = 0.64
     text(d, P(4), by, str(round(air * 100)), air_colour(air), BIG)
@@ -424,6 +424,38 @@ def page_focus():
           'page-focus.png')
 
 
+# --------------------------------------------------------------------------- BLE LIST SDR
+def page_ble_sdr():
+    """As BLE LIST, but decoded from the SDR's own samples: level in dBFS."""
+    img = Image.new('RGB', (W, H), C_BG)
+    d = ImageDraw.Draw(img)
+    header(d, 'BLE LIST SDR', '7 active, 9 total', C_GREEN, 'S7/8')
+    col = lambda r: C_GREEN if r >= -20 else C_YELLOW if r >= -32 else C_ORANGE
+    devs = [(-12, -9, '(Apple)', 'aabbcc000011', 0, ''), (-14, -11, 'Keyboard', 'aabbcc000012', 1, 'new'),
+            (-19, -15, '(Microsoft)', 'aabbcc000013', 0, ''), (-24, -21, '(Samsung)', 'aabbcc000014', 1, ''),
+            (-29, -25, 'Thermometer 1', 'aabbcc000005*', 3, ''), (-33, -30, '?', 'aabbcc000015', 2, ''),
+            (-37, -35, '(Apple)', 'aabbcc000016', 6, ''), (-38, -36, 'Thermometer 3', 'aabbcc000008*', 19, 'stale'),
+            (-40, -38, '(Google)', 'aabbcc000017', 44, 'stale')]
+    mac_w = d.textlength('000000000000*', font=TXT)
+    x_mac = W - P(2) - d.textlength('99s', font=TXT) - P(3) - mac_w
+    for i, (r, mx, name, mac, age, flag) in enumerate(devs):
+        y = P(12) + i * P(10)
+        stale = flag == 'stale'
+        c = C_DIM if stale else col(r)
+        text(d, P(20), y, str(r), c, anchor='ra')
+        d.rectangle([P(23), y + P(2), P(53) - 1, y + P(7) - 1], fill=C_COL)
+        bw = min(P(30), (r + 50) * P(30) // 50)
+        d.rectangle([P(23), y + P(2), P(23) + bw - 1, y + P(7) - 1], fill=c)
+        mxx = min(P(30) - 1, (mx + 50) * P(30) // 50)
+        d.rectangle([P(23) + mxx, y + P(1), P(23) + mxx, y + P(8) - 1], fill=C_WHITE)
+        nc = C_DIM if stale else C_YELLOW if flag == 'new' else C_TEXT if not name.startswith(('(', '?')) else C_DIM
+        text(d, P(56), y, name, nc)
+        text(d, x_mac, y, mac, C_DIM if stale else C_CYAN)
+        text(d, W - P(2), y, f'{age}s', C_DIM, anchor='ra')
+    frame(img, [(None, P(5)), (30, 228), (76, 228), (170, 228), (380, 228), (462, 228)],
+          'page-ble-list-sdr.png')
+
+
 if __name__ == '__main__':
     os.makedirs(OUT, exist_ok=True)
     page_waterfall()
@@ -433,4 +465,5 @@ if __name__ == '__main__':
     page_coverage()
     page_detector()
     page_focus()
+    page_ble_sdr()
     page_ble()

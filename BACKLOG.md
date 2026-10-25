@@ -48,11 +48,11 @@ in [HISTORY.md](HISTORY.md) and delete it here.
   the README instead of drawn mockups, and display checks without photos.
   JC3248: the PSRAM frame; T-Display: the frame buffer if present, else
   render the strips once more.
-- **BLE packets through the SDR** (GFSK demodulator of pit711/espsoup-firmware,
-  `main/families/c5_c6_c61/demod_dsp.h`, GPL-3.0-or-later, integer only):
-  BLE devices on the T-Display, and on the JC without the restart of BLE
-  LIST. Needs fixed gain (their AGC test: 76 → 14 valid packets/s) and our
-  dump word layout. First measure valid packets per second on FOCUS BLE.
+- BLE LIST SDR: about 15–20 dB less sensitive than NimBLE (devices below
+  ~−80 dBm missing) and overloaded by a very strong device next to it.
+  Ideas: gain that steps down only while a near device clips; a cheaper
+  low-pass (the plain C 24-tap filter gave +18 % packets per capture but
+  cost 7.7 ms; the ESP-DSP one gave no gain, HISTORY 2026-10-25).
 
 ## Not doing (decided, see HISTORY.md)
 
