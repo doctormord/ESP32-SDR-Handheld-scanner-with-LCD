@@ -300,3 +300,13 @@ this repository unless noted.
   1–4 (−60.0 to −61.0); airtime 20–33 % on 7–9, 49–66 % on 10 — the
   networks on 6 and 11 overlap there (survey showed 22–25 % on 5–12).
   No visible effect: not blanked. Dropped from BACKLOG.
+
+## 2026-10-25 — README in plain language
+
+- README rewritten at the owner's request: full simple sentences, terms
+  explained on first use, no slogans, picture legends as real numbered
+  lists. Facts, numbers, commands and images unchanged.
+- Internals that were in the README (display chunk windows, cache lines,
+  phosphor lock, waterfall mixing) moved to CLAUDE.md "Hard-won facts".
+- CLAUDE.md: new section "Writing style" with the rules for README,
+  release notes and docs.
